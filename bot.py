@@ -21,9 +21,9 @@ def smart_leverage(atr, price):
     if volatility > 0.01:
         return 3
     elif volatility > 0.006:
-        return 5
+        return 3
     elif volatility > 0.003:
-        return 8
+        return 3
     else:
         return 3
 
@@ -321,7 +321,7 @@ def position_size(balance, price, atr):
     if balance < 20:
         risk_pct = 0.01
     elif balance < 100:
-        risk_pct = 0.05
+        risk_pct = 0.01
     else:
         risk_pct = 0.02
 
