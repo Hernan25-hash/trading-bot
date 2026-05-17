@@ -15,17 +15,41 @@ daily_loss_limit = -20   # max allowed loss per day (USDT)
 # =====================
 # SMART LEVERAGE ENGINE
 # =====================
-def smart_leverage(atr, price):
+def smart_leverage(atr, price, balance):
     volatility = atr / price
 
-    if volatility > 0.01:
-        return 3
+    # default safety cap
+    max_lev = 8
+    min_lev = 1
+
+    # 🧠 HIGH RISK MARKET
+    if volatility > 0.015:
+        lev = 1
+
+    # ⚠️ VERY VOLATILE
+    elif volatility > 0.01:
+        lev = 2
+
+    # 📊 NORMAL MARKET
     elif volatility > 0.006:
-        return 3
+        lev = 3
+
+    # 📈 GOOD MARKET CONDITION
     elif volatility > 0.003:
-        return 3
+        lev = 5
+
+    # 🟢 VERY CALM MARKET
     else:
-        return 3
+        lev = 7
+
+    # 💰 BALANCE ADJUSTMENT (important)
+    if balance < 20:
+        lev = min(2, lev)
+    elif balance < 100:
+        lev = min(5, lev)
+
+    # 🛑 HARD LIMIT
+    return max(min_lev, min(lev, max_lev))
 
 # =====================
 # API (TESTNET)
@@ -300,8 +324,14 @@ def get_balance():
     balances = client.futures_account_balance()
     for b in balances:
         if b["asset"] == "USDT":
-            return float(b["balance"])
+            return float(b["availableBalance"])
     return 0.0
+def can_afford_trade(size, price, leverage):
+    available = get_balance()
+    required_margin = (size * price) / leverage
+
+    # safety buffer 70%
+    return required_margin < available * 0.7
 # =====================
 # RISK GUARD (anti-high volatility filter)
 # =====================
@@ -484,7 +514,10 @@ def has_open_position(symbol):
 # MAIN LOOP (SNIPER MODE)
 # =====================
 
+
 while True:
+    MAX_TRADES_PER_CYCLE = 1
+    trades_this_cycle = 0
 
     # =====================
     # DAILY LOSS CHECK (FIX FIX)
@@ -606,11 +639,11 @@ while True:
 
         print("READY SNIPER TRADE:", best)
 
-        if TRADE_ENABLED:
-
             # =====================
             # OPEN POSITION CHECK
             # =====================
+        if TRADE_ENABLED:
+
             if has_open_position(symbol):
                 print("⚠ Existing position:", symbol)
                 time.sleep(60)
@@ -640,6 +673,17 @@ while True:
             print("Leverage used:", leverage)
 
             # =====================
+            # FINAL SAFETY CHECK BEFORE EXECUTION
+            # =====================
+            if not can_afford_trade(size, best["price"], leverage):
+                print("⚠ SKIP: insufficient margin capacity")
+                continue
+
+            if trades_this_cycle >= MAX_TRADES_PER_CYCLE:
+                print("⚠ CYCLE LIMIT REACHED")
+                continue
+
+            # =====================
             # EXECUTE TRADE
             # =====================
             place_trade(
@@ -648,9 +692,10 @@ while True:
                 size,
                 best["price"],
                 best["atr"]
-            )
+        )
 
-                        # =====================
+            trades_this_cycle += 1
+             # =====================
             # DAILY LOSS UPDATE (FIXED)
             # =====================
 
