@@ -7,9 +7,10 @@ import datetime
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
-from dotenv import load_dotenv
 import os, sys, atexit
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 # =====================
 # CONFIG / SETTINGS
 # =====================
@@ -30,7 +31,7 @@ MAX_TRADES_PER_CYCLE = 1
 MIN_BALANCE = 10
 daily_loss_limit = -20
 
-load_dotenv()
+
 
 lock_file = os.path.join(os.getcwd(), "bot.lock")
 logging.basicConfig(
@@ -119,8 +120,8 @@ def smart_leverage(atr, price, balance):
 # API
 # =====================
 
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
+api_key = os.getenv("API_KEY")
+api_secret = os.getenv("API_SECRET")
 
 client = Client(api_key, api_secret)
 
