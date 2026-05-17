@@ -7,6 +7,49 @@ import datetime
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
+from dotenv import load_dotenv
+import os, sys, atexit
+# =====================
+# CONFIG / SETTINGS
+# =====================
+
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+TIMEFRAME = "5m"
+# 🔥 ADD THIS HERE
+weights = {
+    "1m": 1,
+    "5m": 1,
+    "15m": 2,
+    "1h": 3,
+    "4h": 4,
+    "1d": 5
+}
+
+MAX_TRADES_PER_CYCLE = 1
+MIN_BALANCE = 10
+daily_loss_limit = -20
+
+load_dotenv()
+
+lock_file = os.path.join(os.getcwd(), "bot.lock")
+
+def cleanup():
+    try:
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+    except:
+        pass
+
+atexit.register(cleanup)
+
+# Prevent multiple runs
+if os.path.exists(lock_file):
+    print("Bot already running!")
+    sys.exit()
+
+# Create lock file
+with open(lock_file, "w") as f:
+    f.write(str(os.getpid()))
 # =====================
 # DAILY LOSS PROTECTION
 # =====================
@@ -66,13 +109,14 @@ def smart_leverage(atr, price, balance):
     return max(min_lev, min(int(lev), max_lev))
 
 # =====================
-# API (TESTNET)
+# API
 # =====================
-api_key = "gM9HfSPottj0zvKicX1hg7z3a1GgKJTpq028n7ZOg7Parn3obXuZ083Zu4myPDWz"
-api_secret = "tJC4LYQouXzJaLzB45DEXIFIVeFgi6cBZ0vqGnpMvS0JNxySYyEQJVoFBXiw1qd3"
+
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
 
 client = Client(api_key, api_secret)
-# client.FUTURES_URL = "https://testnet.binancefuture.com/fapi"
+
 
 # =====================
 # SETTINGS
@@ -158,13 +202,19 @@ def check_daily_loss():
     return True
 
 def market_regime(price, ema, atr):
+
     trend = abs(price - ema) / ema
     vol = atr / price
 
-    if trend > 0.01:
+    # STRONG TREND
+    if trend > 0.004:
         return "TRENDING"
-    elif vol < 0.003:
+
+    # DEAD / SIDEWAYS MARKET
+    elif vol < 0.001:
         return "CHOP"
+
+    # NORMAL MARKET
     else:
         return "NEUTRAL"
 
@@ -291,7 +341,7 @@ def volume_bias(symbol, direction):
     else:
         return sell - buy
 
-def signal(df):
+def signal(df, symbol):
     data = analyze(df)
 
     price = data["price"]
@@ -299,48 +349,49 @@ def signal(df):
     rsi = data["rsi"]
     atr = data["atr"]
 
-    # 🧠 REGIME FILTER (UPGRADED VERSION)
-    regime = market_regime(data["price"], data["ema"], data["atr"])
+    # 🧠 REGIME FILTER (UNCHANGED)
+    regime = market_regime(price, ema, atr)
+
     regime_bonus = 0
-
     if regime == "CHOP":
-    # ❗ heavy penalty to reduce fake trades
-        regime_bonus -= 3
-
+        regime_bonus -= 5
     elif regime == "TRENDING":
-        regime_bonus += 2
-
+        regime_bonus += 4
     elif regime == "NEUTRAL":
         regime_bonus += 1
 
     score = 0
-    direction = None
-    volume_pressure = volume_bias(symbol, direction)
 
-    # 📊 TREND DIRECTION
+    # 📊 TREND DIRECTION (UNCHANGED LOGIC)
     if price > ema:
         direction = "BUY"
         score += 2
     else:
         direction = "SELL"
         score += 2
+
+    # 🔥 FIX ONLY: volume_bias AFTER direction is set
+    volume_pressure = volume_bias(symbol, direction)
+
     # =====================
     # TREND STRENGTH
     # =====================
     trend_strength = abs(price - ema) / ema
 
     if trend_strength < 0.0015:
-        score -= 2
+        score -= 1
+    elif trend_strength > 0.003:
+        score += 2
     elif trend_strength > 0.006:
-        score += 1
+        score += 3
 
     # =====================
     # RSI FILTER
     # =====================
-    if direction == "BUY" and rsi < 45:
-        score += 2
-    elif direction == "SELL" and rsi > 55:
-        score += 2
+    if direction == "BUY" and rsi < 50:
+        score += 3
+    elif direction == "SELL" and rsi > 50:
+        score += 3
 
     # =====================
     # VOLUME FILTER
@@ -370,17 +421,22 @@ def signal(df):
         score += 1
 
     # =====================
-    # FINAL CHOP SAFETY (extra guard)
+    # CHOP SAFETY
     # =====================
     chop = abs(price - ema) / ema
     if chop < 0.002:
         score -= 1
     elif chop > 0.01:
         score += 1
+
     # =====================
-    # APPLY REGIME BOOST
+    # REGIME BOOST
     # =====================
     score += regime_bonus
+
+    # =====================
+    # VOLUME PRESSURE BOOST
+    # =====================
     if volume_pressure > 5:
         score += 3
     elif volume_pressure > 2:
@@ -389,7 +445,8 @@ def signal(df):
         score += 1
     elif volume_pressure < -3:
         score -= 2
-
+    # 🔥 BOOST FINAL SCORE
+    score = score * 1.5
     return {
         "score": score,
         "direction": direction,
@@ -588,35 +645,86 @@ def has_open_position(symbol):
         print("Position check error:", e)
         return False
     
-
+trades_this_cycle = 0
 # =====================
 # MAIN LOOP (SNIPER MODE)
 # =====================
 
 
 while True:
-    MAX_TRADES_PER_CYCLE = 1
     trades_this_cycle = 0
-
-    # =====================
-    # DAILY LOSS CHECK (FIX FIX)
-    # =====================
-    if not check_daily_loss():
-        print("BOT STOPPED DUE TO LOSS LIMIT")
-        break
-
     best = None
     best_score = -999
 
     for symbol in SYMBOLS:
 
-       # =====================
+        trend_tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+        buy_score = 0
+        sell_score = 0
+
+        for tf in trend_tfs:
+
+            trend_df = client.futures_klines(
+                symbol=symbol,
+                interval=tf,
+                limit=120
+            )
+
+            trend_df = pd.DataFrame(trend_df, columns=[
+                "time","open","high","low","close","volume",
+                "ct","qav","trades","tbb","tbq","ignore"
+            ])
+
+            trend_df["close"] = trend_df["close"].astype(float)
+
+            ema = EMAIndicator(trend_df["close"], window=20).ema_indicator().iloc[-1]
+            price = trend_df["close"].iloc[-1]
+
+            # ✅ FIX: scoring MUST be inside loop
+            if price > ema:
+                buy_score += weights[tf] * (1 / len(trend_tfs))
+            else:
+                sell_score += weights[tf] * (1 / len(trend_tfs))
+                print(tf, "=>", "BUY" if price > ema else "SELL", price, ema)
+
+        trend_direction = "BUY" if buy_score > sell_score else "SELL"
+        
+
+        score = min(abs(buy_score - sell_score), 10)
+
+        print(symbol, "TREND:", trend_direction, "SCORE:", score)
+
+        # volatility (optional enhancement)
+        vol = trend_df["close"].pct_change().std()
+
+        final_score = score + vol
+        print("BUY SCORE:", buy_score)
+        print("SELL SCORE:", sell_score)
+        print("FINAL SCORE:", final_score)
+
+        if final_score > best_score and final_score < 10:
+            best_score = final_score
+            best = {
+                "symbol": symbol,
+                "score": final_score,
+                "direction": trend_direction,
+                "total_score": final_score
+        }
+
+    # =====================
+    # AFTER LOOP = BEST TRADE
+    # =====================
+    if best:
+        print("🔥 BEST SIGNAL:", best)
+
+    # =====================
     # SMART TIMEFRAME PICK
         # =====================
-        tf = detect_timeframe(symbol)
-        print(symbol, "selected TF:", tf)
+        tf = detect_timeframe(best["symbol"])
+        print(best["symbol"], "selected TF:", tf)
 
-        df = client.futures_klines(symbol=symbol, interval=tf, limit=120)
+        df = client.futures_klines(symbol=best["symbol"], interval=tf, limit=120)
 
         df = pd.DataFrame(df, columns=[
         "time","open","high","low","close","volume",
@@ -627,62 +735,85 @@ while True:
             df[col] = df[col].astype(float)
 
         # =====================
-        #  ANALYZE + FILTER
+        # ANALYZE + FILTER
         # =====================
+
         data = analyze(df)
 
+        trend_strength = abs(data["ema"] - data["price"]) / data["price"]
         volatility = data["atr"] / data["price"]
 
-        # ❌ skip extreme volatility
-        if volatility > 0.015:
-            continue
+        # 1️⃣ FIRST SIGNAL CALL (ONLY ONCE)
+        sig = signal(df, best["symbol"])
 
-        # ❌ skip dead market
-        if volatility < 0.0003:
-            continue
-
-        # ❌ skip extreme RSI conditions
-        if data["rsi"] > 80 or data["rsi"] < 20:
-            continue
-
-        # ❌ skip no-trend market
-        if abs(data["ema"] - data["price"]) / data["price"] < 0.0008:
-            continue
-        # 🧠 NEW: REGIME FILTER (IMPORTANT ADD HERE)
-        if market_regime(data["price"], data["ema"], data["atr"]) == "CHOP":
-            continue
-
-        sig = signal(df)
-
-        # =====================
-        # FIXED SAFETY CHECK (INDENTATION FIX)
-        # =====================
         if not sig or sig["direction"] is None:
             continue
 
-        if sig["score"] < 3:
-             continue
+        # 2️⃣ CONFIDENCE CHECK
+        confidence = abs(buy_score - sell_score) / sum(weights.values())
 
+        if sig["direction"] != trend_direction and confidence < 0.25:
+            print("❌ SKIP: weak trend + mismatch")
+            continue
+
+        # 3️⃣ MARKET FILTERS
+        if volatility > 0.015:
+            continue
+
+        if volatility < 0.0003:
+            continue
+
+        if data["rsi"] > 80 or data["rsi"] < 20:
+            continue
+
+        if trend_strength < 0.0008:
+            continue
+
+        # 4️⃣ REGIME FILTER
+        regime = market_regime(data["price"], data["ema"], data["atr"])
+        print(symbol, "REGIME:", regime)
+
+        if regime == "CHOP":
+            print("SKIP CHOP MARKET")
+            continue
+
+        # 5️⃣ SCORE CHECK
+        print(best["symbol"], "score:", sig["score"])
+
+        if sig["score"] < 1:
+            print("SKIP LOW SCORE")
+            continue
+
+        # 6️⃣ VOLATILITY CHECK (extra safety)
         sig_volatility = sig["atr"] / sig["price"]
 
         if sig_volatility > 0.02:
-            continue
+             continue
 
         if sig_volatility < 0.0005:
             continue
 
-        trend = abs(sig["price"] - data["ema"]) / data["ema"]
+        trend = trend_strength
 
         if trend < 0.001:
             continue
-
         # =====================
         # SCORING CONFIRMATION
         # =====================
         tf_confirm = multi_tf_confirmation(symbol, sig["direction"])
         total_score = sig["score"] + tf_confirm
+        print("PASS CHECK:", sig["score"], total_score)
+        # 🔥 DEBUG HERE (IMPORTANT)
+        print("DEBUG SCORE:", sig["score"])
+        print("DEBUG TOTAL:", total_score)
+        print("DEBUG DIRECTION:", sig["direction"])
+        print("DEBUG TREND:", trend_direction)
 
-        if total_score < 5:
+        print(symbol, "TOTAL SCORE:", total_score)
+        
+
+        if total_score < 1.5:
+            print("SKIP LOW TOTAL")
             continue
 
         print(
@@ -703,15 +834,21 @@ while True:
             **sig,
             "tf": tf,
             "tf_confirm": tf_confirm,
+            
             "total_score": total_score
     }
 
         print("\n🔥 NEW BEST SNIPER SIGNAL:", best)
 
     # =====================
-    # TRADE CHECK
+    # DEBUG FINAL CHECK (ILAGAY DITO)
     # =====================
-    if best and best["total_score"] >= 5:
+        print("DEBUG FINAL CHECK:")
+        print("best:", best)
+        print("total_score:", best.get("total_score"))
+
+    # TRADE CHECK
+    if best and best["total_score"] >= 2:
 
         symbol = best["symbol"]
 
