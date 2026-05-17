@@ -7,8 +7,45 @@ import datetime
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
+import time
+
+last_request = 0
+MIN_DELAY = 0.2  # 5 requests per second max
+
+def rate_limit():
+    global last_request
+    now = time.time()
+    if now - last_request < MIN_DELAY:
+        time.sleep(MIN_DELAY - (now - last_request))
+    last_request = time.time()
 import os, sys, atexit
 import logging
+
+klines_cache = {}
+cache_time = {}
+CACHE_TTL = 30  # seconds
+def get_klines(symbol, interval, limit=50):
+    rate_limit()
+    key = f"{symbol}_{interval}"
+    now = time.time()
+
+    if key in klines_cache and (now - cache_time[key]) < CACHE_TTL:
+        return klines_cache[key]
+
+    # 🔥 DITO DAPAT DIRECT BINANCE CALL
+    data = client.futures_klines(
+        symbol=symbol,
+        interval=interval,
+        limit=limit
+    )
+
+    klines_cache[key] = data
+    cache_time[key] = now
+
+    return data
+
+
+
 from dotenv import load_dotenv
 load_dotenv()
 # =====================
@@ -161,11 +198,11 @@ def can_trade(symbol):
 # =====================
 def detect_timeframe(symbol):
 
-    df_5m = client.futures_klines(symbol=symbol, interval="5m", limit=50)
-    df_15m = client.futures_klines(symbol=symbol, interval="15m", limit=50)
-    df_1h = client.futures_klines(symbol=symbol, interval="1h", limit=50)
-    df_4h = client.futures_klines(symbol=symbol, interval="4h", limit=50)
-    df_1d = client.futures_klines(symbol=symbol, interval="1d", limit=50)
+    df_5m = get_klines(symbol=symbol, interval="5m", limit=50)
+    df_15m = get_klines(symbol=symbol, interval="15m", limit=50)
+    df_1h = get_klines(symbol=symbol, interval="1h", limit=50)
+    df_4h = get_klines(symbol=symbol, interval="4h", limit=50)
+    df_1d = get_klines(symbol=symbol, interval="1d", limit=50)
 
     def get_vol(df):
         closes = [float(x[4]) for x in df]
@@ -230,7 +267,7 @@ def market_regime(price, ema, atr):
 # DATA
 # =====================
 def get_data(symbol):
-    klines = client.futures_klines(symbol=symbol, interval=TIMEFRAME, limit=120)
+    klines = get_klines(symbol=symbol, interval=TIMEFRAME, limit=120)
 
     df = pd.DataFrame(klines, columns=[
         "time","open","high","low","close","volume",
@@ -260,7 +297,7 @@ def multi_tf_confirmation(symbol, direction):
     confirm_score = 0
 
     for tf in tfs:
-        df = client.futures_klines(symbol=symbol, interval=tf, limit=50)
+        df = get_klines(symbol=symbol, interval=tf, limit=50)
 
         df = pd.DataFrame(df, columns=[
             "time","open","high","low","close","volume",
@@ -324,7 +361,7 @@ def volume_bias(symbol, direction):
     sell = 0
 
     for tf in tfs:
-        df = client.futures_klines(symbol=symbol, interval=tf, limit=50)
+        df = get_klines(symbol=symbol, interval=tf, limit=50)
 
         df = pd.DataFrame(df, columns=[
             "time","open","high","low","close","volume",
@@ -652,8 +689,12 @@ def has_open_position(symbol):
     except Exception as e:
         print("Position check error:", e)
         return False
+def preload_data(symbol):
+    tfs = ["1m","5m","15m","1h","4h","1d"]
+    for tf in tfs:
+        get_klines(symbol, tf, 120)
     
-trades_this_cycle = 0
+
 # =====================
 # MAIN LOOP (SNIPER MODE)
 # =====================
@@ -661,8 +702,14 @@ trades_this_cycle = 0
 
 while True:
     log_step("CYCLE", "Starting new scan cycle")
+
+    # 🔥 ADD THIS HERE (IMPORTANT)
+    for symbol in SYMBOLS:
+        preload_data(symbol)
+        time.sleep(0.1)
     trades_this_cycle = 0
-    best = None
+    best_symbol = None
+    best_signal = None
     best_score = -999
 
     for symbol in SYMBOLS:
@@ -675,11 +722,7 @@ while True:
 
         for tf in trend_tfs:
 
-            trend_df = client.futures_klines(
-                symbol=symbol,
-                interval=tf,
-                limit=120
-            )
+            trend_df = get_klines(symbol, tf, 120)
 
             trend_df = pd.DataFrame(trend_df, columns=[
                 "time","open","high","low","close","volume",
@@ -710,32 +753,39 @@ while True:
 
         # volatility (optional enhancement)
         vol = trend_df["close"].pct_change().std()
-
         final_score = score + vol
+
         log_step("SCORE", f"{symbol} buy={buy_score:.2f} sell={sell_score:.2f} final={final_score:.2f}")
 
-        if final_score > best_score and final_score < 10:
-            best_score = final_score
-            best = {
-                "symbol": symbol,
-                "score": final_score,
-                "direction": trend_direction,
-                "total_score": final_score
-        }
+        candidate = {
+        "symbol": symbol,
+        "score": final_score,
+        "direction": trend_direction,
+        "total_score": final_score
+    }
 
-    # =====================
-    # AFTER LOOP = BEST TRADE
-    # =====================
-    if best:
-        print("🔥 BEST SIGNAL:", best)
+        if final_score > best_score:
+            best_score = final_score
+            best_symbol = symbol
+            best_signal = candidate
+
+        # AFTER LOOP = BEST TRADE
+        if best_signal and best_signal["total_score"] >= 2:
+
+            symbol = best_signal["symbol"]
+
+            tf = detect_timeframe(symbol)
+        print(symbol, "selected TF:", tf)
+
+        df = get_klines(symbol, tf, 120)
 
     # =====================
     # SMART TIMEFRAME PICK
         # =====================
-        tf = detect_timeframe(best["symbol"])
-        print(best["symbol"], "selected TF:", tf)
+        tf = detect_timeframe(best_signal["symbol"])
+        print(best_signal["symbol"], "selected TF:", tf)
 
-        df = client.futures_klines(symbol=best["symbol"], interval=tf, limit=120)
+        df = get_klines(best_signal["symbol"], tf, 120)
 
         df = pd.DataFrame(df, columns=[
         "time","open","high","low","close","volume",
@@ -755,94 +805,94 @@ while True:
         volatility = data["atr"] / data["price"]
 
         # 1️⃣ FIRST SIGNAL CALL (ONLY ONCE)
-        sig = signal(df, best["symbol"])
+        sig = signal(df, best_signal["symbol"])
         log_step(
             "SIGNAL",
-            f"{best['symbol']} direction={sig['direction']} score={sig['score']:.2f}"
+            f"{best_signal['symbol']} direction={sig['direction']} score={sig['score']:.2f}"
 )
 
         if not sig or sig["direction"] is None:
-            log_step("SKIP", f"{symbol} invalid signal")
+            log_step("SKIP", f"{best_signal['symbol']} invalid signal")
             continue
 
         # 2️⃣ CONFIDENCE CHECK
         confidence = abs(buy_score - sell_score) / sum(weights.values())
 
         if sig["direction"] != trend_direction and confidence < 0.25:
-            log_step("SKIP", f"{symbol} weak trend + mismatch")
+            log_step("SKIP", f"{best_signal['symbol']} weak trend + mismatch")
             continue
 
         # 3️⃣ MARKET FILTERS
         if volatility > 0.015:
-            log_step("SKIP", f"{symbol} cooldown active")
+            log_step("SKIP", f"{best_signal['symbol']} cooldown active")
             continue
 
         if volatility < 0.0003:
-            log_step("SKIP", f"{symbol} low volatility")
+            log_step("SKIP", f"{best_signal['symbol']} low volatility")
             continue
 
         if data["rsi"] > 80 or data["rsi"] < 20:
-            log_step("SKIP", f"{symbol} RSI out of bounds")
+            log_step("SKIP", f"{best_signal['symbol']} RSI out of bounds")
             continue
 
         if trend_strength < 0.0008:
-            log_step("SKIP", f"{symbol} weak trend")
+            log_step("SKIP", f"{best_signal['symbol']} weak trend")
             continue
 
         # 4️⃣ REGIME FILTER
         regime = market_regime(data["price"], data["ema"], data["atr"])
-        log_step("REGIME", f"{best['symbol']} regime={regime}")
+        log_step("REGIME", f"{best_signal['symbol']} regime={regime}")
         
 
         if regime == "CHOP":
-            log_step("SKIP", f"{symbol} CHOP MARKET")
+            log_step("SKIP", f"{best_signal['symbol']} CHOP MARKET")
             continue
 
         # 5️⃣ SCORE CHECK
-        log_step("SCORE", f"{symbol} score: {sig['score']}")
+        log_step("SCORE", f"{best_signal['symbol']} score: {sig['score']}")
 
         if sig["score"] < 1:
-            log_step("SKIP", f"{symbol} low score")
+            log_step("SKIP", f"{best_signal['symbol']} low score")
             continue
 
         # 6️⃣ VOLATILITY CHECK (extra safety)
         sig_volatility = sig["atr"] / sig["price"]
 
         if sig_volatility > 0.02:
-            log_step("SKIP", f"{symbol} insufficient balance")
+            log_step("SKIP", f"{best_signal['symbol']} insufficient balance")
             continue
 
         if sig_volatility < 0.0005:
-            log_step("SKIP", f"{symbol} low volatility")
+            log_step("SKIP", f"{best_signal['symbol']} low volatility")
             continue
 
         trend = trend_strength
 
         if trend < 0.001:
-            log_step("SKIP", f"{symbol} weak trend")
+            log_step("SKIP", f"{best_signal['symbol']} weak trend")
             continue
         # =====================
         # SCORING CONFIRMATION
         # =====================
-        tf_confirm = multi_tf_confirmation(symbol, sig["direction"])
+        tf_confirm = multi_tf_confirmation(best_signal["symbol"], sig["direction"])
         total_score = sig["score"] + tf_confirm
-        log_step("CHECK", f"{symbol} PASS CHECK: {sig['score']}, {total_score}")
+        log_step("CHECK", f"{best_signal['symbol']} PASS CHECK: {sig['score']}, {total_score}")
         # 🔥 DEBUG HERE (IMPORTANT)
         print("DEBUG SCORE:", sig["score"])
         print("DEBUG TOTAL:", total_score)
         print("DEBUG DIRECTION:", sig["direction"])
         print("DEBUG TREND:", trend_direction)
 
-        print(symbol, "TOTAL SCORE:", total_score)
+        print(best_signal["symbol"], "TOTAL SCORE:", total_score)
         
 
         if total_score < 1.5:
             print("SKIP LOW TOTAL")
-            log_step("SKIP", f"{symbol} low total score")
+            log_step("SKIP", f"{best_signal['symbol']} low total score")
             continue
 
         print(
-            symbol,
+            best_signal["symbol"],
             "base score:", sig["score"],
             "TF confirm:", tf_confirm,
             "TOTAL:", total_score
@@ -855,7 +905,7 @@ while True:
             best_score = total_score
 
             best = {
-            "symbol": symbol,
+            "symbol": best_signal["symbol"],
             **sig,
             "tf": tf,
             "tf_confirm": tf_confirm,
@@ -873,9 +923,14 @@ while True:
         print("total_score:", best.get("total_score"))
 
     # TRADE CHECK
-    if best and best["total_score"] >= 2:
+    if best_signal and best_signal["total_score"] >= 2:
 
-        symbol = best["symbol"]
+        symbol = best_signal["symbol"]
+
+        tf = detect_timeframe(symbol)
+        print(symbol, "selected TF:", tf)
+
+        df = get_data(symbol)  # or get_klines(symbol, tf)
 
         # =====================
         # COOLDOWN CHECK (FIXED)
