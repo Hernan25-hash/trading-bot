@@ -18,38 +18,52 @@ daily_loss_limit = -20   # max allowed loss per day (USDT)
 def smart_leverage(atr, price, balance):
     volatility = atr / price
 
-    # default safety cap
     max_lev = 8
     min_lev = 1
 
-    # 🧠 HIGH RISK MARKET
+    # =====================
+    # BASE LEVERAGE (market volatility first)
+    # =====================
     if volatility > 0.015:
         lev = 1
-
-    # ⚠️ VERY VOLATILE
     elif volatility > 0.01:
         lev = 2
-
-    # 📊 NORMAL MARKET
     elif volatility > 0.006:
         lev = 3
-
-    # 📈 GOOD MARKET CONDITION
     elif volatility > 0.003:
         lev = 5
-
-    # 🟢 VERY CALM MARKET
     else:
         lev = 7
 
-    # 💰 BALANCE ADJUSTMENT (important)
-    if balance < 20:
-        lev = min(2, lev)
-    elif balance < 100:
-        lev = min(5, lev)
+    # =====================
+    # SCALABLE BALANCE FACTOR (IMPORTANT PART)
+    # =====================
+    # log scaling so it works from 100 → 1,000,000+
+    import math
 
-    # 🛑 HARD LIMIT
-    return max(min_lev, min(lev, max_lev))
+    balance_factor = math.log10(max(balance, 10))  # prevents log(0)
+
+    # normalize to 0–1 range roughly
+    # 100 = 2, 1,000 = 3, 10,000 = 4, 100,000 = 5, 1,000,000 = 6
+    normalized = (balance_factor - 2) / 4
+    normalized = max(0, min(normalized, 1))
+
+    # leverage adjustment curve (smooth, not abrupt)
+    lev = lev + (normalized * 2.5)
+
+    # =====================
+    # EXTREME VOLATILITY OVERRIDE
+    # =====================
+    if volatility > 0.012:
+        lev = min(2, lev)
+
+    if volatility < 0.002:
+        lev = min(8, lev)
+
+    # =====================
+    # FINAL LIMITS
+    # =====================
+    return max(min_lev, min(int(lev), max_lev))
 
 # =====================
 # API (TESTNET)
@@ -142,6 +156,18 @@ def check_daily_loss():
         return False
 
     return True
+
+def market_regime(price, ema, atr):
+    trend = abs(price - ema) / ema
+    vol = atr / price
+
+    if trend > 0.01:
+        return "TRENDING"
+    elif vol < 0.003:
+        return "CHOP"
+    else:
+        return "NEUTRAL"
+
 # =====================
 # DATA
 # =====================
@@ -233,9 +259,38 @@ def analyze(df):
         "volatility": volatility
     }
 
-# =====================
-# SCORING ENGINE
-# =====================
+def volume_bias(symbol, direction):
+    tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
+
+    buy = 0
+    sell = 0
+
+    for tf in tfs:
+        df = client.futures_klines(symbol=symbol, interval=tf, limit=50)
+
+        df = pd.DataFrame(df, columns=[
+            "time","open","high","low","close","volume",
+            "ct","qav","trades","tbb","tbq","ignore"
+        ])
+
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+
+        price = df["close"].iloc[-1]
+        ema = EMAIndicator(df["close"], window=20).ema_indicator().iloc[-1]
+
+        vol_ratio = df["volume"].iloc[-1] / df["volume"].mean()
+
+        if price > ema:
+            buy += vol_ratio
+        else:
+            sell += vol_ratio
+
+    if direction == "BUY":
+        return buy - sell
+    else:
+        return sell - buy
+
 def signal(df):
     data = analyze(df)
 
@@ -243,30 +298,37 @@ def signal(df):
     ema = data["ema"]
     rsi = data["rsi"]
     atr = data["atr"]
-    vol_ratio = data["volatility"]
 
-    chop = abs(price - ema) / ema
-    trend_strength = chop
+    # 🧠 REGIME FILTER (UPGRADED VERSION)
+    regime = market_regime(data["price"], data["ema"], data["atr"])
+    regime_bonus = 0
 
-    # 🔥 EARLY EXIT FILTER
-    if chop < 0.001:
-        return {"score": 0, "direction": None, "price": price, "atr": atr}
+    if regime == "CHOP":
+    # ❗ heavy penalty to reduce fake trades
+        regime_bonus -= 3
+
+    elif regime == "TRENDING":
+        regime_bonus += 2
+
+    elif regime == "NEUTRAL":
+        regime_bonus += 1
 
     score = 0
     direction = None
-    # =====================
-    # TREND
-    # =====================
+    volume_pressure = volume_bias(symbol, direction)
+
+    # 📊 TREND DIRECTION
     if price > ema:
         direction = "BUY"
         score += 2
     else:
         direction = "SELL"
         score += 2
+    # =====================
+    # TREND STRENGTH
+    # =====================
+    trend_strength = abs(price - ema) / ema
 
-    # =====================
-    # TREND STRENGTH FILTER
-    # =====================
     if trend_strength < 0.0015:
         score -= 2
     elif trend_strength > 0.006:
@@ -284,9 +346,14 @@ def signal(df):
     # VOLUME FILTER
     # =====================
     vol = df["volume"].iloc[-1]
+    vol_ratio = vol / df["volume"].mean()
 
-    if vol > df["volume"].mean() * 1.2:
+    if vol_ratio > 1.5:
+        score += 2
+    elif vol_ratio > 1.2:
         score += 1
+    elif vol_ratio < 0.7:
+        score -= 1
 
     # =====================
     # ATR FILTER
@@ -295,20 +362,33 @@ def signal(df):
         score += 1
 
     # =====================
-    # VOLATILITY FILTER (NEW)
+    # VOLATILITY FILTER
     # =====================
     if vol_ratio > 0.01:
-        score -= 2   # too dangerous
+        score -= 2
     elif vol_ratio < 0.003:
-        score += 1   # stable market
+        score += 1
 
     # =====================
-    # CHOP FILTER
+    # FINAL CHOP SAFETY (extra guard)
     # =====================
+    chop = abs(price - ema) / ema
     if chop < 0.002:
         score -= 1
     elif chop > 0.01:
         score += 1
+    # =====================
+    # APPLY REGIME BOOST
+    # =====================
+    score += regime_bonus
+    if volume_pressure > 5:
+        score += 3
+    elif volume_pressure > 2:
+        score += 2
+    elif volume_pressure > 0:
+        score += 1
+    elif volume_pressure < -3:
+        score -= 2
 
     return {
         "score": score,
@@ -316,7 +396,6 @@ def signal(df):
         "price": price,
         "atr": atr
     }
-   
 # =====================
 # BALANCE
 # =====================
@@ -531,8 +610,8 @@ while True:
 
     for symbol in SYMBOLS:
 
-        # =====================
-        # SMART TIMEFRAME PICK
+       # =====================
+    # SMART TIMEFRAME PICK
         # =====================
         tf = detect_timeframe(symbol)
         print(symbol, "selected TF:", tf)
@@ -540,15 +619,15 @@ while True:
         df = client.futures_klines(symbol=symbol, interval=tf, limit=120)
 
         df = pd.DataFrame(df, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tbb","tbq","ignore"
+        "time","open","high","low","close","volume",
+        "ct","qav","trades","tbb","tbq","ignore"
         ])
 
         for col in ["open","high","low","close","volume"]:
             df[col] = df[col].astype(float)
 
         # =====================
-        # ANALYZE + FILTER
+        #  ANALYZE + FILTER
         # =====================
         data = analyze(df)
 
@@ -569,33 +648,65 @@ while True:
         # ❌ skip no-trend market
         if abs(data["ema"] - data["price"]) / data["price"] < 0.0008:
             continue
+        # 🧠 NEW: REGIME FILTER (IMPORTANT ADD HERE)
+        if market_regime(data["price"], data["ema"], data["atr"]) == "CHOP":
+            continue
 
         sig = signal(df)
 
-        if sig:
+        # =====================
+        # FIXED SAFETY CHECK (INDENTATION FIX)
+        # =====================
+        if not sig or sig["direction"] is None:
+            continue
 
-            tf_confirm = multi_tf_confirmation(symbol, sig["direction"])
-            total_score = sig["score"] + tf_confirm
+        if sig["score"] < 3:
+             continue
 
-            print(
-                symbol,
-                "base score:", sig["score"],
-                "TF confirm:", tf_confirm,
-                "TOTAL:", total_score
-            )
+        sig_volatility = sig["atr"] / sig["price"]
 
-            if total_score > best_score:
-                best_score = total_score
+        if sig_volatility > 0.02:
+            continue
 
-                best = {
-                    "symbol": symbol,
-                    **sig,
-                    "tf": tf,
-                    "tf_confirm": tf_confirm,
-                    "total_score": total_score
-                }
+        if sig_volatility < 0.0005:
+            continue
 
-                print("\n🔥 NEW BEST SNIPER SIGNAL:", best)
+        trend = abs(sig["price"] - data["ema"]) / data["ema"]
+
+        if trend < 0.001:
+            continue
+
+        # =====================
+        # SCORING CONFIRMATION
+        # =====================
+        tf_confirm = multi_tf_confirmation(symbol, sig["direction"])
+        total_score = sig["score"] + tf_confirm
+
+        if total_score < 5:
+            continue
+
+        print(
+            symbol,
+            "base score:", sig["score"],
+            "TF confirm:", tf_confirm,
+            "TOTAL:", total_score
+)
+
+        # =====================
+        # BEST SIGNAL TRACKING
+        # =====================
+        if total_score > best_score:
+            best_score = total_score
+
+            best = {
+            "symbol": symbol,
+            **sig,
+            "tf": tf,
+            "tf_confirm": tf_confirm,
+            "total_score": total_score
+    }
+
+        print("\n🔥 NEW BEST SNIPER SIGNAL:", best)
 
     # =====================
     # TRADE CHECK
@@ -637,7 +748,10 @@ while True:
         size = position_size(balance, best["price"], best["atr"])
         size = adjust_quantity(size, step)
 
+        balance = get_balance()
         print("READY SNIPER TRADE:", best)
+
+        leverage = smart_leverage(best["atr"], best["price"], balance)
 
             # =====================
             # OPEN POSITION CHECK
@@ -660,7 +774,8 @@ while True:
             # =====================
             # LEVERAGE
             # =====================
-            leverage = smart_leverage(best["atr"], best["price"])
+            balance = get_balance()
+            leverage = smart_leverage(best["atr"], best["price"], balance)
 
             try:
                 client.futures_change_leverage(
