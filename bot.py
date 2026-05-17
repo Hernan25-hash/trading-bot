@@ -9,6 +9,7 @@ from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
 from dotenv import load_dotenv
 import os, sys, atexit
+import logging
 # =====================
 # CONFIG / SETTINGS
 # =====================
@@ -32,7 +33,13 @@ daily_loss_limit = -20
 load_dotenv()
 
 lock_file = os.path.join(os.getcwd(), "bot.lock")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(message)s"
+)
 
+def log_step(step, msg):
+    logging.info(f"[{step}] {msg}")
 def cleanup():
     try:
         if os.path.exists(lock_file):
@@ -130,7 +137,7 @@ TRADE_ENABLED = True   # 🔴 SAFE MODE (set True kapag ready ka na)
 MIN_BALANCE = 10 
 
 
-print("SMART SNIPER BOT STARTED")
+log_step("START", "SMART SNIPER BOT STARTED")
 # =====================
 # COOLDOWN TRACKER (WIN/LOSS PROTECTION)
 # =====================
@@ -652,11 +659,13 @@ trades_this_cycle = 0
 
 
 while True:
+    log_step("CYCLE", "Starting new scan cycle")
     trades_this_cycle = 0
     best = None
     best_score = -999
 
     for symbol in SYMBOLS:
+        log_step("SCAN", f"Checking {symbol}")
 
         trend_tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
@@ -693,15 +702,16 @@ while True:
 
         score = min(abs(buy_score - sell_score), 10)
 
-        print(symbol, "TREND:", trend_direction, "SCORE:", score)
+        log_step(
+        "TREND",
+        f"{symbol} trend={trend_direction} buy={buy_score:.2f} sell={sell_score:.2f} score={score:.2f}"
+    )
 
         # volatility (optional enhancement)
         vol = trend_df["close"].pct_change().std()
 
         final_score = score + vol
-        print("BUY SCORE:", buy_score)
-        print("SELL SCORE:", sell_score)
-        print("FINAL SCORE:", final_score)
+        log_step("SCORE", f"{symbol} buy={buy_score:.2f} sell={sell_score:.2f} final={final_score:.2f}")
 
         if final_score > best_score and final_score < 10:
             best_score = final_score
@@ -745,64 +755,77 @@ while True:
 
         # 1️⃣ FIRST SIGNAL CALL (ONLY ONCE)
         sig = signal(df, best["symbol"])
+        log_step(
+            "SIGNAL",
+            f"{best['symbol']} direction={sig['direction']} score={sig['score']:.2f}"
+)
 
         if not sig or sig["direction"] is None:
+            log_step("SKIP", f"{symbol} invalid signal")
             continue
 
         # 2️⃣ CONFIDENCE CHECK
         confidence = abs(buy_score - sell_score) / sum(weights.values())
 
         if sig["direction"] != trend_direction and confidence < 0.25:
-            print("❌ SKIP: weak trend + mismatch")
+            log_step("SKIP", f"{symbol} weak trend + mismatch")
             continue
 
         # 3️⃣ MARKET FILTERS
         if volatility > 0.015:
+            log_step("SKIP", f"{symbol} cooldown active")
             continue
 
         if volatility < 0.0003:
+            log_step("SKIP", f"{symbol} low volatility")
             continue
 
         if data["rsi"] > 80 or data["rsi"] < 20:
+            log_step("SKIP", f"{symbol} RSI out of bounds")
             continue
 
         if trend_strength < 0.0008:
+            log_step("SKIP", f"{symbol} weak trend")
             continue
 
         # 4️⃣ REGIME FILTER
         regime = market_regime(data["price"], data["ema"], data["atr"])
-        print(symbol, "REGIME:", regime)
+        log_step("REGIME", f"{best['symbol']} regime={regime}")
+        
 
         if regime == "CHOP":
-            print("SKIP CHOP MARKET")
+            log_step("SKIP", f"{symbol} CHOP MARKET")
             continue
 
         # 5️⃣ SCORE CHECK
-        print(best["symbol"], "score:", sig["score"])
+        log_step("SCORE", f"{symbol} score: {sig['score']}")
 
         if sig["score"] < 1:
-            print("SKIP LOW SCORE")
+            log_step("SKIP", f"{symbol} low score")
             continue
 
         # 6️⃣ VOLATILITY CHECK (extra safety)
         sig_volatility = sig["atr"] / sig["price"]
 
         if sig_volatility > 0.02:
-             continue
+            log_step("SKIP", f"{symbol} insufficient balance")
+            continue
 
         if sig_volatility < 0.0005:
+            log_step("SKIP", f"{symbol} low volatility")
             continue
 
         trend = trend_strength
 
         if trend < 0.001:
+            log_step("SKIP", f"{symbol} weak trend")
             continue
         # =====================
         # SCORING CONFIRMATION
         # =====================
         tf_confirm = multi_tf_confirmation(symbol, sig["direction"])
         total_score = sig["score"] + tf_confirm
-        print("PASS CHECK:", sig["score"], total_score)
+        log_step("CHECK", f"{symbol} PASS CHECK: {sig['score']}, {total_score}")
         # 🔥 DEBUG HERE (IMPORTANT)
         print("DEBUG SCORE:", sig["score"])
         print("DEBUG TOTAL:", total_score)
@@ -814,6 +837,7 @@ while True:
 
         if total_score < 1.5:
             print("SKIP LOW TOTAL")
+            log_step("SKIP", f"{symbol} low total score")
             continue
 
         print(
@@ -861,6 +885,7 @@ while True:
             if cooldown < 300:  # 5 minutes
                 print(f"⏳ COOLDOWN ACTIVE: {symbol} ({int(300 - cooldown)}s left)")
                 time.sleep(60)
+                log_step("SKIP", f"{symbol} existing position")
                 continue
 
         # =====================
@@ -869,6 +894,7 @@ while True:
         if not risk_guard(best["atr"], best["price"]):
             print("⚠ Market too volatile, skip trade")
             time.sleep(60)
+            log_step("SKIP", f"{symbol} low score")
             continue
 
         balance = get_balance()
@@ -879,6 +905,7 @@ while True:
         if balance < MIN_BALANCE:
             print("⚠ Insufficient balance:", balance)
             time.sleep(60)
+            log_step("SKIP", f"{symbol} low balance")
             continue
 
         step = get_step_size(symbol)
@@ -886,7 +913,10 @@ while True:
         size = adjust_quantity(size, step)
 
         balance = get_balance()
-        print("READY SNIPER TRADE:", best)
+        log_step(
+            "READY",
+            f"{symbol} direction={best['direction']} score={best['total_score']:.2f}"
+    )
 
         leverage = smart_leverage(best["atr"], best["price"], balance)
 
@@ -898,6 +928,7 @@ while True:
             if has_open_position(symbol):
                 print("⚠ Existing position:", symbol)
                 time.sleep(60)
+                log_step("SKIP", f"{symbol} existing position")
                 continue
 
             # =====================
@@ -906,6 +937,7 @@ while True:
             if not can_trade(symbol):
                 print("⏳ Cooldown active:", symbol)
                 time.sleep(60)
+                log_step("SKIP", f"{symbol} cooldown active")
                 continue
 
             # =====================
@@ -928,16 +960,20 @@ while True:
             # FINAL SAFETY CHECK BEFORE EXECUTION
             # =====================
             if not can_afford_trade(size, best["price"], leverage):
-                print("⚠ SKIP: insufficient margin capacity")
+                log_step("SKIP", f"{symbol} insufficient margin capacity")
                 continue
 
             if trades_this_cycle >= MAX_TRADES_PER_CYCLE:
-                print("⚠ CYCLE LIMIT REACHED")
+                log_step("SKIP", f"{symbol} cycle limit reached")
                 continue
 
             # =====================
             # EXECUTE TRADE
             # =====================
+            log_step(
+                "EXECUTE",
+                f"{symbol} {best['direction']} leverage={leverage} size={size}"
+    )
             place_trade(
                 symbol,
                 best["direction"],
@@ -964,5 +1000,9 @@ while True:
 
         else:
             print("🟡 SAFE MODE (no trade executed)")
+        log_step(
+            "SUMMARY",
+            f"cycle done | trades={trades_this_cycle} | best_score={best_score}"
+        )
 
     time.sleep(60)
