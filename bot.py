@@ -334,7 +334,7 @@ def multi_tf_confirmation(symbol, direction):
 
     return confirm_score
 def adjust_quantity(qty, step):
-    if qty <= 0:
+    if qty is None or qty <= 0:
         return 0
 
     qty = qty - (qty % step)
@@ -1120,6 +1120,9 @@ while True:
             # OPEN POSITION CHECK
             # =====================
         if TRADE_ENABLED:
+            if size <= 0:
+                print("❌ BLOCKED: size is zero")
+                continue
 
             if has_open_position(symbol):
                 print("⚠ Existing position:", symbol)
@@ -1164,16 +1167,43 @@ while True:
             # =====================
             # EXECUTE TRADE
             # =====================
+
             log_step(
                 "EXECUTE",
                 f"{symbol} {best['direction']} leverage={leverage} size={size}"
-    )
+            )
+
+            print("RAW SIZE:", size)
+            print("STEP:", step)
+            print("PRICE:", best["price"])
+            print("BALANCE:", balance)
+            print("LEVERAGE:", leverage)
+
+            # =====================
+            # SAFETY CHECK 1: SIZE VALIDATION
+            # =====================
+            if size <= 0:
+                print("❌ SIZE INVALID - SKIP TRADE")
+                continue
+
+            # =====================
+            # SAFETY CHECK 2: MIN NOTIONAL (BINANCE RULE)
+            # =====================
+            notional = size * best["price"]
+
+            if notional < 5:
+                print("❌ TOO SMALL NOTIONAL:", notional)
+                continue
+
+            # =====================
+            # EXECUTE TRADE
+            # =====================
             place_trade(
-                symbol,
-                best["direction"],
-                size,
-                best["price"],
-                best["atr"]
+            symbol,
+            best["direction"],
+            size,
+            best["price"],
+            best["atr"]
         )
 
             trades_this_cycle += 1
