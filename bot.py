@@ -954,7 +954,7 @@ while True:
         # 2️⃣ CONFIDENCE CHECK
         confidence = abs(buy_score - sell_score) / sum(weights.values())
 
-        if sig["direction"] != trend_direction and confidence < 0.25:
+        if sig["direction"] != trend_direction and confidence < 0.10:
             log_step("SKIP", f"{best_signal['symbol']} weak trend + mismatch")
             continue
 
@@ -1022,7 +1022,7 @@ while True:
         print(best_signal["symbol"], "TOTAL SCORE:", total_score)
         
 
-        if total_score < 1.5:
+        if total_score < 0.5:
             print("SKIP LOW TOTAL")
             log_step("SKIP", f"{best_signal['symbol']} low total score")
             continue
