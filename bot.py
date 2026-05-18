@@ -166,7 +166,7 @@ client = Client(api_key, api_secret)
 # =====================
 # SETTINGS
 # =====================
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+
 TIMEFRAME = "5m"
 RISK_PER_TRADE = 0.01
 
@@ -512,7 +512,7 @@ def can_afford_trade(size, price, leverage):
     required_margin = (size * price) / leverage
 
     # safety buffer 70%
-    return required_margin < available * 0.7
+    return required_margin <= available * 0.98
 # =====================
 # RISK GUARD (anti-high volatility filter)
 # =====================
@@ -522,38 +522,61 @@ def risk_guard(atr, price):
 # =====================
 # POSITION SIZE (risk-based)
 # =====================
-def position_size(balance, price, atr):
+# =====================
+# SMART POSITION SIZE
+# =====================
+def position_size(balance, price, leverage, total_score, volatility):
 
-    # 1. safety checks
-    if balance <= 0 or price <= 0 or atr <= 0:
+    # =====================
+    # SAFETY CHECK
+    # =====================
+    if balance <= 0 or price <= 0:
         return 0
 
-    # 2. dynamic risk
-    if balance < 20:
-        risk_pct = 0.01
-    elif balance < 100:
-        risk_pct = 0.01
+    # =====================
+    # SIGNAL QUALITY BASE
+    # =====================
+    if total_score < 3:
+        allocation = 0.10
+
+    elif total_score < 5:
+        allocation = 0.25
+
+    elif total_score < 8:
+        allocation = 0.50
+
+    # =====================
+    # SNIPER MODE (NEAR ALL-IN)
+    # =====================
+    elif total_score < 10:
+        allocation = 0.75
     else:
-        risk_pct = 0.02
-
-    risk_amount = balance * risk_pct
+        allocation = 0.90   # 🔥 near all-in (safe version)
 
     # =====================
-    # HARD SAFETY CAP (OPTION 3 FIX)
+    # VOLATILITY PROTECTION
     # =====================
-    max_notional = balance * 2   # max exposure allowed
+    if volatility > 0.015:
+        allocation *= 0.30   # extreme risk cut
 
-    if risk_amount > max_notional:
-        risk_amount = max_notional
+    elif volatility > 0.010:
+        allocation *= 0.50
 
-    # 3. stop distance (ATR-based)
-    stop_distance = atr * 2
+    elif volatility > 0.007:
+        allocation *= 0.75
 
-    if stop_distance <= 0:
-        return 0
+    # =====================
+    # FINAL SAFETY CAP (IMPORTANT)
+    # =====================
+    allocation = min(allocation, 0.90)
 
-    # 4. raw size
-    size = risk_amount / stop_distance
+    usable_balance = balance * allocation
+    notional = usable_balance * leverage
+    size = notional / price
+
+    # HARD CAP (anti wipe protection)
+    max_notional = balance * leverage * 0.8
+    size = min(size, max_notional / price)
 
     return size
 
@@ -699,8 +722,11 @@ def preload_data(symbol):
 # MAIN LOOP (SNIPER MODE)
 # =====================
 
-
+best = None
 while True:
+    if daily_pnl <= daily_loss_limit:
+        print("STOP BOT - DAILY LOSS HIT")
+        break
     log_step("CYCLE", "Starting new scan cycle")
 
     # 🔥 ADD THIS HERE (IMPORTANT)
@@ -770,7 +796,7 @@ while True:
             best_signal = candidate
 
         # AFTER LOOP = BEST TRADE
-        if best_signal and best_signal["total_score"] >= 2:
+        if best and best["total_score"] >= 2:
 
             symbol = best_signal["symbol"]
 
@@ -909,7 +935,7 @@ while True:
             **sig,
             "tf": tf,
             "tf_confirm": tf_confirm,
-            
+            "volatility": volatility,
             "total_score": total_score
     }
 
@@ -918,14 +944,19 @@ while True:
     # =====================
     # DEBUG FINAL CHECK (ILAGAY DITO)
     # =====================
+    if not best:
         print("DEBUG FINAL CHECK:")
         print("best:", best)
         print("total_score:", best.get("total_score"))
+    
+        print("No valid best setup")
+        time.sleep(60)
+        continue
 
     # TRADE CHECK
-    if best_signal and best_signal["total_score"] >= 2:
+    if best and best["total_score"] >= 2:
 
-        symbol = best_signal["symbol"]
+        symbol = best["symbol"]
 
         tf = detect_timeframe(symbol)
         print(symbol, "selected TF:", tf)
@@ -965,7 +996,20 @@ while True:
             continue
 
         step = get_step_size(symbol)
-        size = position_size(balance, best["price"], best["atr"])
+        leverage = smart_leverage(
+        best["atr"],
+        best["price"],
+        balance
+    )
+        volatility = best["atr"] / best["price"]
+
+        size = position_size(
+        balance,
+        best["price"],
+        leverage,
+        best["total_score"],
+        volatility
+    )
         size = adjust_quantity(size, step)
 
         balance = get_balance()
@@ -999,8 +1043,6 @@ while True:
             # =====================
             # LEVERAGE
             # =====================
-            balance = get_balance()
-            leverage = smart_leverage(best["atr"], best["price"], balance)
 
             try:
                 client.futures_change_leverage(
