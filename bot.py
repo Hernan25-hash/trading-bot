@@ -661,6 +661,9 @@ def place_trade(symbol, direction, size, price, atr):
             sl_mult = 1.8
             tp_mult = 3.0
 
+        # =====================
+        # ENTRY / SL / TP CALC
+        # =====================
         if direction == "BUY":
             sl_price = price - (atr * sl_mult) - fee_buffer
             tp_price = price + (atr * tp_mult) + fee_buffer
@@ -693,9 +696,9 @@ def place_trade(symbol, direction, size, price, atr):
         filled = False
 
         # =====================
-        # ORDER MONITOR LOOP (FIXED)
+        # ORDER MONITOR LOOP
         # =====================
-        for _ in range(60):  # wait 60 seconds max
+        for _ in range(60):
             time.sleep(1)
 
             check = client.futures_get_order(
@@ -703,9 +706,7 @@ def place_trade(symbol, direction, size, price, atr):
                 orderId=order_id
             )
 
-            status = check["status"]
-
-            if status == "FILLED":
+            if check["status"] == "FILLED":
                 filled = True
                 break
 
@@ -741,41 +742,45 @@ def place_trade(symbol, direction, size, price, atr):
         print("SL:", sl_price)
         print("TP:", tp_price)
 
+        # =====================
+        # PLACE SL / TP (FIXED INDENTATION + SAFETY)
+        # =====================
         try:
             client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-            type="STOP_MARKET",
-            stopPrice=round(sl_price, price_precision),
-            closePosition=True,
-            workingType="MARK_PRICE"
-        )
+                symbol=symbol,
+                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+                type="STOP_MARKET",
+                stopPrice=round(sl_price, price_precision),
+                closePosition=True,
+                workingType="MARK_PRICE"
+            )
 
             print("🛑 SL SET OK")
 
             client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=round(tp_price, price_precision),
-            closePosition=True,
-            workingType="MARK_PRICE"
-        )
+                symbol=symbol,
+                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+                type="TAKE_PROFIT_MARKET",
+                stopPrice=round(tp_price, price_precision),
+                closePosition=True,
+                workingType="MARK_PRICE"
+            )
 
             print("🎯 TP SET OK")
 
         except Exception as e:
             print("❌ SL/TP ERROR:", e)
 
-            # =====================
-            # 🔥 ADD THIS HERE (AFTER SL/TP BLOCK)
-            # =====================
+        # =====================
+        # LOCK UPDATE (FIXED POSITION)
+        # =====================
         last_trade_time[symbol] = datetime.datetime.now()
         trade_lock[symbol] = time.time()
 
         print("🔒 TRADE LOCKED:", symbol)
+
     except Exception as e:
-        print(e)
+        print("ERROR:", e)
 # =====================
 # POSITION CHECKER
 # =====================
