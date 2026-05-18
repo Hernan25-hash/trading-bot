@@ -1,5 +1,7 @@
 from binance.client import Client
 from binance.enums import SIDE_BUY, SIDE_SELL
+from numpy.ma import filled
+from numpy.ma import filled
 import pandas as pd
 import numpy as np
 import time
@@ -518,6 +520,31 @@ def signal(df, symbol):
         "atr": atr
     }
 # =====================
+# SMART ENTRY CALCULATOR
+# =====================
+def smart_entry(price, atr, direction, ema):
+
+    pullback_strength = atr * 0.25
+
+    # STRONG TREND
+    trend_gap = abs(price - ema) / price
+
+    if trend_gap > 0.01:
+        pullback_strength = atr * 0.40
+
+    elif trend_gap > 0.005:
+        pullback_strength = atr * 0.30
+
+    # BUY ENTRY
+    if direction == "BUY":
+        entry = price - pullback_strength
+
+    # SELL ENTRY
+    else:
+        entry = price + pullback_strength
+
+    return entry
+# =====================
 # BALANCE
 # =====================
 def get_balance():
@@ -619,11 +646,8 @@ def place_trade(symbol, direction, size, price, atr):
         # SMART TP/SL ENGINE
         # =====================
         volatility = atr / price
-
-        # Binance futures fee estimate (ITO HINDI NAWALA)
         fee_buffer = price * 0.0015
 
-        # Dynamic ATR multipliers
         if volatility > 0.01:
             sl_mult = 3.0
             tp_mult = 5.0
@@ -634,48 +658,80 @@ def place_trade(symbol, direction, size, price, atr):
             sl_mult = 1.8
             tp_mult = 3.0
 
-        # BUY / SELL logic
         if direction == "BUY":
             sl_price = price - (atr * sl_mult) - fee_buffer
             tp_price = price + (atr * tp_mult) + fee_buffer
+            entry_price = price - (atr * 0.25)
         else:
             sl_price = price + (atr * sl_mult) + fee_buffer
             tp_price = price - (atr * tp_mult) - fee_buffer
+            entry_price = price + (atr * 0.25)
+
+        price_precision = len(str(price).split(".")[1]) if "." in str(price) else 2
+        entry_price = round(entry_price, price_precision)
+
+        print(f"🎯 SMART ENTRY TARGET: {entry_price}")
 
         # =====================
-        # MIN NOTIONAL CHECK
-        # =====================
-        min_notional = 5  # Binance Futures safety
-
-        if size * price < min_notional:
-            print(f"❌ BELOW MIN NOTIONAL: {size * price:.2f} USDT - SKIP TRADE")
-            return None
-
-        # =====================
-        # MARKET ENTRY
+        # PLACE LIMIT ORDER
         # =====================
         order = client.futures_create_order(
             symbol=symbol,
             side=side,
-            type="MARKET",
-            quantity=size
+            type="LIMIT",
+            timeInForce="GTC",
+            quantity=size,
+            price=entry_price
         )
 
         order_id = order["orderId"]
+        print("🕒 Waiting for fill...")
 
-        time.sleep(0.3)
+        filled = False
 
+        # =====================
+        # ORDER MONITOR LOOP (FIXED)
+        # =====================
+        for _ in range(60):  # wait 60 seconds max
+            time.sleep(1)
+
+            check = client.futures_get_order(
+                symbol=symbol,
+                orderId=order_id
+            )
+
+            status = check["status"]
+
+            if status == "FILLED":
+                filled = True
+                break
+
+        # =====================
+        # CANCEL IF NOT FILLED
+        # =====================
+        if not filled:
+            try:
+                client.futures_cancel_order(
+                    symbol=symbol,
+                    orderId=order_id
+                )
+            except:
+                pass
+
+            print("❌ LIMIT ORDER NOT FILLED - CANCELLED")
+            return None
+
+        # =====================
+        # FINAL ENTRY PRICE
+        # =====================
         filled_order = client.futures_get_order(
             symbol=symbol,
             orderId=order_id
         )
 
-        entry_price = float(filled_order.get("avgPrice") or price)
+        entry_price = float(filled_order.get("avgPrice") or entry_price)
 
-        # =====================
-        # PRICE PRECISION (FIXED PLACE)
-        # =====================
-        price_precision = len(str(price).split(".")[1]) if "." in str(price) else 2
+        print(f"✅ FILLED AT: {entry_price}")
 
         print(f"\n🚀 TRADE EXECUTED {symbol} {direction}")
         print("Entry:", entry_price)
@@ -711,7 +767,8 @@ def place_trade(symbol, direction, size, price, atr):
     except Exception as e:
         print("ORDER ERROR:", e)
         return None
-        # =====================
+
+# =====================
 # POSITION CHECKER
 # =====================
 def has_open_position(symbol):
