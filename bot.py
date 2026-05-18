@@ -43,7 +43,19 @@ def get_klines(symbol, interval, limit=50):
     cache_time[key] = now
 
     return data
+def klines_to_df(klines):
 
+    df = pd.DataFrame(klines, columns=[
+        "time","open","high","low","close","volume",
+        "ct","qav","trades","tbb","tbq","ignore"
+    ])
+
+    for col in ["open","high","low","close","volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna()
+
+    return df
 
 
 from dotenv import load_dotenv
@@ -274,8 +286,13 @@ def get_data(symbol):
         "ct","qav","trades","tbb","tbq","ignore"
     ])
 
-    for col in ["open","high","low","close","volume"]:
-        df[col] = df[col].astype(float)
+    numeric_cols = ["open","high","low","close","volume"]
+
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # remove bad rows
+    df = df.dropna()
 
     return df
 
@@ -299,10 +316,7 @@ def multi_tf_confirmation(symbol, direction):
     for tf in tfs:
         df = get_klines(symbol=symbol, interval=tf, limit=50)
 
-        df = pd.DataFrame(df, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tbb","tbq","ignore"
-        ])
+        df = klines_to_df(df)
 
         df["close"] = df["close"].astype(float)
 
@@ -332,26 +346,29 @@ def adjust_quantity(qty, step):
 # INDICATORS
 # =====================
 def analyze(df):
-    close = df["close"]
+
+    close = pd.to_numeric(df["close"], errors="coerce")
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
 
     ema = EMAIndicator(close, window=20).ema_indicator()
     rsi = RSIIndicator(close).rsi()
-    atr = AverageTrueRange(df["high"], df["low"], close, window=14).average_true_range()
+
+    atr = AverageTrueRange(
+        high,
+        low,
+        close,
+        window=14
+    ).average_true_range()
 
     price = float(close.iloc[-1])
-    ema_val = float(ema.iloc[-1])
-    rsi_val = float(rsi.iloc[-1])
-    atr_val = float(atr.iloc[-1])
-
-    # EXTRA: volatility ratio (VERY IMPORTANT for smart leverage)
-    volatility = atr_val / price
 
     return {
         "price": price,
-        "ema": ema_val,
-        "rsi": rsi_val,
-        "atr": atr_val,
-        "volatility": volatility
+        "ema": float(ema.iloc[-1]),
+        "rsi": float(rsi.iloc[-1]),
+        "atr": float(atr.iloc[-1]),
+        "volatility": float(atr.iloc[-1]) / price
     }
 
 def volume_bias(symbol, direction):
@@ -425,10 +442,10 @@ def signal(df, symbol):
 
     if trend_strength < 0.0015:
         score -= 1
-    elif trend_strength > 0.003:
-        score += 2
     elif trend_strength > 0.006:
         score += 3
+    elif trend_strength > 0.003:
+        score += 2
 
     # =====================
     # RSI FILTER
@@ -460,9 +477,11 @@ def signal(df, symbol):
     # =====================
     # VOLATILITY FILTER
     # =====================
-    if vol_ratio > 0.01:
+    volatility = atr / price
+
+    if volatility > 0.01:
         score -= 2
-    elif vol_ratio < 0.003:
+    elif volatility < 0.003:
         score += 1
 
     # =====================
@@ -723,20 +742,28 @@ def preload_data(symbol):
 # =====================
 
 best = None
+
 while True:
+
     if daily_pnl <= daily_loss_limit:
         print("STOP BOT - DAILY LOSS HIT")
         break
+
     log_step("CYCLE", "Starting new scan cycle")
 
-    # 🔥 ADD THIS HERE (IMPORTANT)
+    # preload data
     for symbol in SYMBOLS:
         preload_data(symbol)
         time.sleep(0.1)
+
     trades_this_cycle = 0
-    best_symbol = None
+
+    # 🔥 RESET EVERY CYCLE (IMPORTANT)
     best_signal = None
-    best_score = -999
+    best_score = -999999
+    best_trend_score = float("-inf")
+    best_symbol = None
+    best = None
 
     for symbol in SYMBOLS:
         log_step("SCAN", f"Checking {symbol}")
@@ -790,21 +817,34 @@ while True:
         "total_score": final_score
     }
 
-        if final_score > best_score:
-            best_score = final_score
+        if final_score > best_trend_score:
+            best_trend_score = final_score
             best_symbol = symbol
-            best_signal = candidate
+            best_signal = {
+                "symbol": symbol,
+                "trend_score": final_score,
+                "direction": trend_direction
+        }
+    # =====================
+    # AFTER LOOP = EXECUTION
+    # =====================
 
-        # AFTER LOOP = BEST TRADE
-        if best and best["total_score"] >= 2:
+        if not best_signal:
+           print("NO VALID SIGNAL FOUND")
+           time.sleep(60)
+           continue
 
-            symbol = best_signal["symbol"]
+        symbol = best_signal["symbol"]
 
-            tf = detect_timeframe(symbol)
+        tf = detect_timeframe(symbol)
         print(symbol, "selected TF:", tf)
 
-        df = get_klines(symbol, tf, 120)
+        df = klines_to_df(
+        get_klines(symbol, tf, 120)
+)
 
+        data = analyze(df)
+    
     # =====================
     # SMART TIMEFRAME PICK
         # =====================
@@ -927,8 +967,8 @@ while True:
         # =====================
         # BEST SIGNAL TRACKING
         # =====================
-        if total_score > best_score:
-            best_score = total_score
+        if total_score > best_trend_score:
+            best_trend_score = total_score
 
             best = {
             "symbol": best_signal["symbol"],
@@ -947,8 +987,7 @@ while True:
     if not best:
         print("DEBUG FINAL CHECK:")
         print("best:", best)
-        print("total_score:", best.get("total_score"))
-    
+
         print("No valid best setup")
         time.sleep(60)
         continue
