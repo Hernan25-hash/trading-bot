@@ -194,6 +194,9 @@ log_step("START", "SMART SNIPER BOT STARTED")
 # COOLDOWN TRACKER (WIN/LOSS PROTECTION)
 # =====================
 trade_lock = {}
+
+def is_locked(symbol):
+    return symbol in trade_lock
 # =====================
 # COOLDOWN SYSTEM (prevent overtrading on same symbol)
 # =====================
@@ -738,10 +741,8 @@ def place_trade(symbol, direction, size, price, atr):
         print("SL:", sl_price)
         print("TP:", tp_price)
 
-        # =====================
-        # STOP LOSS
-        # =====================
-        client.futures_create_order(
+        try:
+            client.futures_create_order(
             symbol=symbol,
             side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
             type="STOP_MARKET",
@@ -750,10 +751,9 @@ def place_trade(symbol, direction, size, price, atr):
             workingType="MARK_PRICE"
         )
 
-        # =====================
-        # TAKE PROFIT
-        # =====================
-        client.futures_create_order(
+            print("🛑 SL SET OK")
+
+            client.futures_create_order(
             symbol=symbol,
             side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
             type="TAKE_PROFIT_MARKET",
@@ -762,12 +762,20 @@ def place_trade(symbol, direction, size, price, atr):
             workingType="MARK_PRICE"
         )
 
-        return order
+            print("🎯 TP SET OK")
 
+        except Exception as e:
+            print("❌ SL/TP ERROR:", e)
+
+            # =====================
+            # 🔥 ADD THIS HERE (AFTER SL/TP BLOCK)
+            # =====================
+        last_trade_time[symbol] = datetime.datetime.now()
+        trade_lock[symbol] = time.time()
+
+        print("🔒 TRADE LOCKED:", symbol)
     except Exception as e:
-        print("ORDER ERROR:", e)
-        return None
-
+        print(e)
 # =====================
 # POSITION CHECKER
 # =====================
@@ -1116,89 +1124,98 @@ while True:
 
         leverage = smart_leverage(best["atr"], best["price"], balance)
 
-            # =====================
-            # OPEN POSITION CHECK
-            # =====================
-        if TRADE_ENABLED:
-            if size <= 0:
-                print("❌ BLOCKED: size is zero")
-                continue
+        # =====================
+        # OPEN POSITION CHECK
+        # =====================
+        if not TRADE_ENABLED:
+            continue
 
-            if has_open_position(symbol):
-                print("⚠ Existing position:", symbol)
-                time.sleep(60)
-                log_step("SKIP", f"{symbol} existing position")
-                continue
+            # 1. SIZE CHECK
+        if size <= 0:
+            print("❌ BLOCKED: size is zero")
+            continue
+
+            # 2. EXISTING POSITION CHECK
+        if has_open_position(symbol):
+            print("⚠ Existing position:", symbol)
+            log_step("SKIP", f"{symbol} existing position")
+            continue
 
             # =====================
             # COOLDOWN CHECK
             # =====================
-            if not can_trade(symbol):
-                print("⏳ Cooldown active:", symbol)
-                time.sleep(60)
-                log_step("SKIP", f"{symbol} cooldown active")
-                continue
+        if not can_trade(symbol):
+            print("⏳ Cooldown active:", symbol)
+            time.sleep(60)
+            log_step("SKIP", f"{symbol} cooldown active")
+            continue
 
-            # =====================
-            # LEVERAGE
-            # =====================
+        # =====================
+        # LEVERAGE
+        # =====================
 
-            try:
-                client.futures_change_leverage(
-                    symbol=symbol,
-                    leverage=leverage
-                )
-            except Exception as e:
-                print("Leverage error:", e)
+        try:
+            client.futures_change_leverage(
+                symbol=symbol,
+                leverage=leverage
+        )
+        except Exception as e:
+            print("Leverage error:", e)
 
             print("Leverage used:", leverage)
 
-            # =====================
-            # FINAL SAFETY CHECK BEFORE EXECUTION
-            # =====================
-            if not can_afford_trade(size, best["price"], leverage):
-                log_step("SKIP", f"{symbol} insufficient margin capacity")
-                continue
+        # =====================
+        # FINAL SAFETY CHECK BEFORE EXECUTION
+        # =====================
+        if not can_afford_trade(size, best["price"], leverage):
+            log_step("SKIP", f"{symbol} insufficient margin capacity")
+            continue
+        if is_locked(symbol):
+            print("⚠ SKIP LOCKED:", symbol)
+            continue
 
-            if trades_this_cycle >= MAX_TRADES_PER_CYCLE:
-                log_step("SKIP", f"{symbol} cycle limit reached")
-                continue
+        if trades_this_cycle >= MAX_TRADES_PER_CYCLE:
+            log_step("SKIP", f"{symbol} cycle limit reached")
+            continue
 
-            # =====================
-            # EXECUTE TRADE
-            # =====================
+        # =====================
+        # EXECUTE TRADE
+        # =====================
 
-            log_step(
-                "EXECUTE",
-                f"{symbol} {best['direction']} leverage={leverage} size={size}"
-            )
+        log_step(
+            "EXECUTE",
+            f"{symbol} {best['direction']} leverage={leverage} size={size}"
+        )
+            # lock immediately after decision
+        last_trade_time[symbol] = datetime.datetime.now()
+        trade_lock[symbol] = time.time()
 
-            print("RAW SIZE:", size)
-            print("STEP:", step)
-            print("PRICE:", best["price"])
-            print("BALANCE:", balance)
-            print("LEVERAGE:", leverage)
+        print("RAW SIZE:", size)
+        print("STEP:", step)
+        print("PRICE:", best["price"])
+        print("BALANCE:", balance)
+        print("LEVERAGE:", leverage)
 
-            # =====================
-            # SAFETY CHECK 1: SIZE VALIDATION
-            # =====================
-            if size <= 0:
-                print("❌ SIZE INVALID - SKIP TRADE")
-                continue
+        # =====================
+        # SAFETY CHECK 1: SIZE VALIDATION
+        # =====================
+        if size <= 0:
+            print("❌ SIZE INVALID - SKIP TRADE")
+            continue
 
-            # =====================
-            # SAFETY CHECK 2: MIN NOTIONAL (BINANCE RULE)
-            # =====================
-            notional = size * best["price"]
+        # =====================
+        # SAFETY CHECK 2: MIN NOTIONAL (BINANCE RULE)
+        # =====================
+        notional = size * best["price"]
 
-            if notional < 5:
-                print("❌ TOO SMALL NOTIONAL:", notional)
-                continue
-
-            # =====================
-            # EXECUTE TRADE
-            # =====================
-            place_trade(
+        if notional < 5:
+            print("❌ TOO SMALL NOTIONAL:", notional)
+            continue
+        place_trade(...)
+        # =====================
+        # EXECUTE TRADE (IMPORTANT PART)
+        # =====================
+        place_trade(
             symbol,
             best["direction"],
             size,
@@ -1206,27 +1223,13 @@ while True:
             best["atr"]
         )
 
-            trades_this_cycle += 1
-             # =====================
-            # DAILY LOSS UPDATE (FIXED)
-            # =====================
+        trades_this_cycle += 1
 
-            estimated_loss = (best["atr"] * 2) * size
+        print("🟡 SAFE MODE (no trade executed)")
 
-            # update DAILY PNL
-            daily_pnl -= estimated_loss
-
-            print("📉 TRADE RISK LOGGED:", round(estimated_loss, 2))
-            print("📉 DAILY PNL UPDATED:", round(daily_pnl, 2))
-
-            last_trade_time[symbol] = datetime.datetime.now()
-            trade_lock[symbol] = time.time()
-
-        else:
-            print("🟡 SAFE MODE (no trade executed)")
         log_step(
             "SUMMARY",
-            f"cycle done | trades={trades_this_cycle} | best_score={best_score}"
+            f"cycle done | trades={trades_this_cycle} | best_score={best_trend_score}"
         )
 
-    time.sleep(60)
+time.sleep(60)
