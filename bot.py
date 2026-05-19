@@ -612,7 +612,24 @@ def get_balance():
             return float(b["availableBalance"])
     return 0.0
 
+def wait_for_fill(order_id, symbol, timeout=1800):
+    start = time.time()
 
+    while time.time() - start < timeout:
+        order = client.futures_get_order(
+            symbol=symbol,
+            orderId=order_id
+        )
+
+        if order["status"] == "FILLED":
+            return True
+
+        if order["status"] in ["CANCELED", "EXPIRED"]:
+            return False
+
+        time.sleep(3)
+
+    return False
 def can_afford_trade(size, price, leverage):
     available = get_balance()
     required_margin = (size * price) / leverage
@@ -695,101 +712,151 @@ def position_size(balance, price, leverage, total_score, volatility):
 # =====================
 def place_trade(symbol, direction, size, price, atr):
 
-    
+    # =====================
+    # CANCEL EXISTING ORDERS
+    # =====================
+    try:
+        client.futures_cancel_all_open_orders(symbol=symbol)
+    except:
+        pass
+
+    side = SIDE_BUY if direction == "BUY" else SIDE_SELL
+
+    # =====================
+    # SMART TP/SL ENGINE
+    # =====================
+    volatility = atr / price
+    fee_buffer = price * 0.0015
+
+    if volatility > 0.01:
+        sl_mult = 3.0
+        tp_mult = 5.0
+    elif volatility > 0.005:
+        sl_mult = 2.5
+        tp_mult = 4.0
+    else:
+        sl_mult = 1.8
+        tp_mult = 3.0
+
+    # =====================
+    # ENTRY / SL / TP CALC
+    # =====================
+    if direction == "BUY":
+        sl_price = price - (atr * sl_mult) - fee_buffer
+        tp_price = price + (atr * tp_mult) + fee_buffer
+        entry_price = price - (atr * 0.25)
+    else:
+        sl_price = price + (atr * sl_mult) + fee_buffer
+        tp_price = price - (atr * tp_mult) - fee_buffer
+        entry_price = price + (atr * 0.25)
+
+    # =====================
+    # PRICE PRECISION FIX (IMPORTANT FIX)
+    # =====================
+    try:
+        info = client.futures_exchange_info()
+        for s in info["symbols"]:
+            if s["symbol"] == symbol:
+                for f in s["filters"]:
+                    if f["filterType"] == "PRICE_FILTER":
+                        tick = float(f["tickSize"])
+                        break
+    except:
+        tick = 0.01
+
+    entry_price = round(round(entry_price / tick) * tick, 8)
+
+    print(f"🎯 SMART ENTRY TARGET: {entry_price}")
+
+    # =====================
+    # PLACE LIMIT ORDER
+    # =====================
+    try:
+        order = client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type="LIMIT",
+            timeInForce="GTC",
+            quantity=size,
+            price=entry_price,
+        )
+
+        order_id = order["orderId"]
+
         # =====================
-        # CANCEL EXISTING ORDERS
+        # WAIT FOR FILL (REAL CHECK)
         # =====================
-        try:
-            client.futures_cancel_all_open_orders(symbol=symbol)
-        except:
-            pass
-
-        side = SIDE_BUY if direction == "BUY" else SIDE_SELL
+        filled = wait_for_fill(order_id, symbol, timeout=1800)
 
         # =====================
-        # SMART TP/SL ENGINE
+        # IF NOT FILLED → CANCEL
         # =====================
-        volatility = atr / price
-        fee_buffer = price * 0.0015
+        if not filled:
+            print("❌ NOT FILLED - CANCELLING ORDER")
 
-        if volatility > 0.01:
-            sl_mult = 3.0
-            tp_mult = 5.0
-        elif volatility > 0.005:
-            sl_mult = 2.5
-            tp_mult = 4.0
-        else:
-            sl_mult = 1.8
-            tp_mult = 3.0
+            try:
+                client.futures_cancel_order(
+                    symbol=symbol,
+                    orderId=order_id
+                )
+            except:
+                pass
 
-        # =====================
-        # ENTRY / SL / TP CALC
-        # =====================
-        if direction == "BUY":
-            sl_price = price - (atr * sl_mult) - fee_buffer
-            tp_price = price + (atr * tp_mult) + fee_buffer
-            entry_price = price - (atr * 0.25)
-        else:
-            sl_price = price + (atr * sl_mult) + fee_buffer
-            tp_price = price - (atr * tp_mult) - fee_buffer
-            entry_price = price + (atr * 0.25)
-
-        price_precision = len(str(price).split(".")[1]) if "." in str(price) else 2
-        entry_price = round(entry_price, price_precision)
-
-        print(f"🎯 SMART ENTRY TARGET: {entry_price}")
-
-        # =====================
-        # PLACE LIMIT ORDER
-        # =====================
-        try:
-            order = client.futures_create_order(
-                symbol=symbol,
-                side=side,
-                type="LIMIT",
-                timeInForce="GTC",
-                quantity=size,
-                price=entry_price,
-            )
-
-            order_id = order["orderId"]
-            print("📌 LIMIT ORDER PLACED:", order_id)
-
-        except Exception as e:
-            print("❌ LIMIT ORDER ERROR:", e)
             return
 
         # =====================
-        # IMMEDIATELY PLACE SL / TP (NO WAIT)
+        # IF FILLED → CONFIRM POSITION
         # =====================
+        time.sleep(1)
 
-        try:
-            # STOP LOSS
-            client.futures_create_order(
-                symbol=symbol,
-                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-                type="STOP_MARKET",
-                stopPrice=round(sl_price, price_precision),
-                closePosition=True,
-                workingType="MARK_PRICE"
-            )
+        positions = client.futures_position_information(symbol=symbol)
+        position_amt = float(positions[0]["positionAmt"])
 
-            # TAKE PROFIT
-            client.futures_create_order(
-                symbol=symbol,
-                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-                type="TAKE_PROFIT_MARKET",
-                stopPrice=round(tp_price, price_precision),
-                closePosition=True,
-                workingType="MARK_PRICE"
-            )
+        if position_amt == 0:
+            print("⚠ NO POSITION FOUND AFTER FILL - SKIP SL/TP")
+            return
 
-            print("🛑 SL + 🎯 TP PLACED IMMEDIATELY")
+        entry_fill_price = float(positions[0]["entryPrice"])
 
-        except Exception as e:
-            print("❌ SL/TP ERROR:", e)
-    
+        # =====================
+        # RECALCULATE SL/TP BASED ON REAL ENTRY
+        # =====================
+        if direction == "BUY":
+            sl_price = entry_fill_price - (atr * sl_mult)
+            tp_price = entry_fill_price + (atr * tp_mult)
+        else:
+            sl_price = entry_fill_price + (atr * sl_mult)
+            tp_price = entry_fill_price - (atr * tp_mult)
 
+        # =====================
+        # PLACE SL
+        # =====================
+        client.futures_create_order(
+            symbol=symbol,
+            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+            type="STOP_MARKET",
+            stopPrice=round(sl_price, 8),
+            closePosition=True,
+            workingType="MARK_PRICE"
+        )
+
+        # =====================
+        # PLACE TP
+        # =====================
+        client.futures_create_order(
+            symbol=symbol,
+            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+            type="TAKE_PROFIT_MARKET",
+            stopPrice=round(tp_price, 8),
+            closePosition=True,
+            workingType="MARK_PRICE"
+        )
+
+        print("🟢 SL + TP PLACED")
+
+    except Exception as e:
+        print("❌ LIMIT ORDER ERROR:", e)
+        return
 # =====================
 # POSITION CHECKER
 # =====================
