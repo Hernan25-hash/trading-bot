@@ -1137,26 +1137,26 @@ while True:
 
         print("\n🔥 NEW BEST SNIPER SIGNAL:", best)
 
-    # =====================
-    # DEBUG FINAL CHECK (ILAGAY DITO)
-    # =====================
-    if not best:
-        print("DEBUG FINAL CHECK:")
-        print("best:", best)
+        # =====================
+        # DEBUG FINAL CHECK (ILAGAY DITO)
+        # =====================
+        if not best:
+            print("DEBUG FINAL CHECK:")
+            print("best:", best)
 
-        print("No valid best setup")
-        time.sleep(60)
-        continue
+            print("No valid best setup")
+            time.sleep(60)
+            continue
 
-    # TRADE CHECK
-    if best and best["total_score"] >= 2:
+        # TRADE CHECK
+        if best and best["total_score"] >= 2:
 
-        symbol = best["symbol"]
+            symbol = best["symbol"]
 
-        tf = detect_timeframe(symbol)
-        print(symbol, "selected TF:", tf)
+            tf = detect_timeframe(symbol)
+            print(symbol, "selected TF:", tf)
 
-        df = get_data(symbol)  # or get_klines(symbol, tf)
+            df = get_data(symbol)  # or get_klines(symbol, tf)
 
         # =====================
         # COOLDOWN CHECK (FIXED)
@@ -1170,14 +1170,14 @@ while True:
                 log_step("SKIP", f"{symbol} existing position")
                 continue
 
-        # =====================
-        # RISK CHECK
-        # =====================
-        if not risk_guard(best["atr"], best["price"]):
-            print("⚠ Market too volatile, skip trade")
-            time.sleep(60)
-            log_step("SKIP", f"{symbol} low score")
-            continue
+            # =====================
+            # RISK CHECK
+            # =====================
+            if not risk_guard(best["atr"], best["price"]):
+                print("⚠ Market too volatile, skip trade")
+                time.sleep(60)
+                log_step("SKIP", f"{symbol} low score")
+                continue
 
         balance = get_balance()
 
@@ -1290,11 +1290,17 @@ while True:
         if notional < 5:
             print("❌ TOO SMALL NOTIONAL:", notional)
             continue
-        place_trade(...)
+
         # =====================
-        # EXECUTE TRADE (IMPORTANT PART)
+        # EXECUTE TRADE
         # =====================
-        place_trade(symbol, best["direction"], size, best["price"], best["atr"])
+        place_trade(
+        symbol,
+            best["direction"],
+            size,
+            best["price"],
+            best["atr"]
+        )
 
         trades_this_cycle += 1
 
