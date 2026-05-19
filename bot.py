@@ -831,26 +831,36 @@ def place_trade(symbol, direction, size, price, atr):
         # =====================
         # PLACE SL
         # =====================
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-            type="STOP_MARKET",
-            stopPrice=round(sl_price, 8),
-            closePosition=True,
-            workingType="MARK_PRICE"
-        )
+        try:
+            sl_order = client.futures_create_order(
+                symbol=symbol,
+                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+                type="STOP_MARKET",
+                stopPrice=round(sl_price, 8),
+                closePosition=True,
+                workingType="MARK_PRICE"
+            )
+            print("🟢 SL placed:", sl_order)
+
+        except Exception as e:
+            print("❌ SL ERROR:", e)
 
         # =====================
         # PLACE TP
         # =====================
-        client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=round(tp_price, 8),
-            closePosition=True,
-            workingType="MARK_PRICE"
-        )
+        try:
+            tp_order = client.futures_create_order(
+                symbol=symbol,
+                side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
+                type="TAKE_PROFIT_MARKET",
+                stopPrice=round(tp_price, 8),
+                closePosition=True,
+                workingType="MARK_PRICE"
+            )
+            print("🟢 TP placed:", tp_order)
+
+        except Exception as e:
+            print("❌ TP ERROR:", e)
 
         print("🟢 SL + TP PLACED")
 
