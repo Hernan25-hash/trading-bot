@@ -674,10 +674,16 @@ def position_size(balance, price, leverage, total_score, volatility):
     # =====================
     # SNIPER MODE (NEAR ALL-IN)
     # =====================
+    if total_score < 3:
+        allocation = 0.10
+    elif total_score < 5:
+        allocation = 0.25
+    elif total_score < 8:
+        allocation = 0.50
     elif total_score < 10:
         allocation = 0.75
     else:
-        allocation = 0.90  # 🔥 near all-in (safe version)
+        allocation = 1.0
 
     # =====================
     # VOLATILITY PROTECTION
@@ -1222,15 +1228,6 @@ while True:
                 continue
 
         balance = get_balance()
-
-        # =====================
-        # BALANCE CHECK
-        # =====================
-        if balance < MIN_BALANCE:
-            print("⚠ Insufficient balance:", balance)
-            time.sleep(60)
-            log_step("SKIP", f"{symbol} low balance")
-            continue
 
         step = get_step_size(symbol)
         leverage = smart_leverage(best["atr"], best["price"], balance)
