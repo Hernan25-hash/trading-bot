@@ -1238,6 +1238,12 @@ while True:
         )
         size = adjust_quantity(size, step)
 
+        notional = size * best["price"]
+
+        if size <= 0 or notional < 5:
+           size = 5 / best["price"]
+           size = adjust_quantity(size, step)
+
         balance = get_balance()
         log_step(
             "READY",
