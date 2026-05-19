@@ -695,7 +695,7 @@ def position_size(balance, price, leverage, total_score, volatility):
 # =====================
 def place_trade(symbol, direction, size, price, atr):
 
-    try:
+    
         # =====================
         # CANCEL EXISTING ORDERS
         # =====================
@@ -742,62 +742,29 @@ def place_trade(symbol, direction, size, price, atr):
         # =====================
         # PLACE LIMIT ORDER
         # =====================
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type="LIMIT",
-            timeInForce="GTC",
-            quantity=size,
-            price=entry_price,
-        )
-
-        order_id = order["orderId"]
-        print("🕒 Waiting for fill...")
-
-        filled = False
-
-        # =====================
-        # ORDER MONITOR LOOP
-        # =====================
-        for _ in range(60):
-            time.sleep(1)
-
-            check = client.futures_get_order(symbol=symbol, orderId=order_id)
-
-            if check["status"] == "FILLED":
-                filled = True
-                break
-
-        # =====================
-        # CANCEL IF NOT FILLED
-        # =====================
-        if not filled:
-            try:
-                client.futures_cancel_order(symbol=symbol, orderId=order_id)
-            except:
-                pass
-
-            print("❌ LIMIT ORDER NOT FILLED - CANCELLED")
-            return None
-
-        # =====================
-        # FINAL ENTRY PRICE
-        # =====================
-        filled_order = client.futures_get_order(symbol=symbol, orderId=order_id)
-
-        entry_price = float(filled_order.get("avgPrice") or entry_price)
-
-        print(f"✅ FILLED AT: {entry_price}")
-
-        print(f"\n🚀 TRADE EXECUTED {symbol} {direction}")
-        print("Entry:", entry_price)
-        print("SL:", sl_price)
-        print("TP:", tp_price)
-
-        # =====================
-        # PLACE SL / TP (FIXED INDENTATION + SAFETY)
-        # =====================
         try:
+            order = client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type="LIMIT",
+                timeInForce="GTC",
+                quantity=size,
+                price=entry_price,
+            )
+
+            order_id = order["orderId"]
+            print("📌 LIMIT ORDER PLACED:", order_id)
+
+        except Exception as e:
+            print("❌ LIMIT ORDER ERROR:", e)
+            return
+
+        # =====================
+        # IMMEDIATELY PLACE SL / TP (NO WAIT)
+        # =====================
+
+        try:
+            # STOP LOSS
             client.futures_create_order(
                 symbol=symbol,
                 side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
@@ -805,10 +772,10 @@ def place_trade(symbol, direction, size, price, atr):
                 stopPrice=round(sl_price, price_precision),
                 closePosition=True,
                 workingType="MARK_PRICE",
+                reduceOnly=True
             )
 
-            print("🛑 SL SET OK")
-
+            # TAKE PROFIT
             client.futures_create_order(
                 symbol=symbol,
                 side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
@@ -816,24 +783,14 @@ def place_trade(symbol, direction, size, price, atr):
                 stopPrice=round(tp_price, price_precision),
                 closePosition=True,
                 workingType="MARK_PRICE",
+                reduceOnly=True
             )
 
-            print("🎯 TP SET OK")
+            print("🛑 SL + 🎯 TP PLACED IMMEDIATELY")
 
         except Exception as e:
             print("❌ SL/TP ERROR:", e)
-
-        # =====================
-        # LOCK UPDATE (FIXED POSITION)
-        # =====================
-        last_trade_time[symbol] = datetime.datetime.now()
-        trade_lock[symbol] = time.time()
-
-        print("🔒 TRADE LOCKED:", symbol)
-
-    except Exception as e:
-        print("ERROR:", e)
-
+    
 
 # =====================
 # POSITION CHECKER
@@ -856,7 +813,12 @@ def has_open_position(symbol):
         print("Position check error:", e)
         return False
 
-
+def has_pending_order(symbol):
+    try:
+        orders = client.futures_get_open_orders(symbol=symbol)
+        return len(orders) > 0
+    except:
+        return False
 def preload_data(symbol):
     tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
     for tf in tfs:
@@ -1223,7 +1185,12 @@ while True:
             print("⚠ Existing position:", symbol)
             log_step("SKIP", f"{symbol} existing position")
             continue
-
+            # =====================
+            # PENDING ORDER CHECK
+            # =====================
+        if has_pending_order(symbol):
+            print("⚠ SKIP: pending order exists", symbol)
+            continue
             # =====================
             # COOLDOWN CHECK
             # =====================
