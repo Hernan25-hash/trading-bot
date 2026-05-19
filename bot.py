@@ -712,15 +712,31 @@ def position_size(balance, price, leverage, total_score, volatility):
 # =====================
 def place_trade(symbol, direction, size, price, atr):
 
-    # =====================
-    # CANCEL EXISTING ORDERS
-    # =====================
     try:
         client.futures_cancel_all_open_orders(symbol=symbol)
     except:
         pass
 
     side = SIDE_BUY if direction == "BUY" else SIDE_SELL
+
+    # =====================
+    # GET PRECISION RULES
+    # =====================
+    try:
+        info = client.futures_exchange_info()
+
+        tick = 0.01
+        for s in info["symbols"]:
+            if s["symbol"] == symbol:
+                for f in s["filters"]:
+                    if f["filterType"] == "PRICE_FILTER":
+                        tick = float(f["tickSize"])
+                        break
+    except:
+        tick = 0.01
+
+    def round_to_tick(price):
+        return round(round(price / tick) * tick, 8)
 
     # =====================
     # SMART TP/SL ENGINE
@@ -751,20 +767,11 @@ def place_trade(symbol, direction, size, price, atr):
         entry_price = price + (atr * 0.25)
 
     # =====================
-    # PRICE PRECISION FIX (IMPORTANT FIX)
+    # APPLY PRECISION FIX (IMPORTANT)
     # =====================
-    try:
-        info = client.futures_exchange_info()
-        for s in info["symbols"]:
-            if s["symbol"] == symbol:
-                for f in s["filters"]:
-                    if f["filterType"] == "PRICE_FILTER":
-                        tick = float(f["tickSize"])
-                        break
-    except:
-        tick = 0.01
-
-    entry_price = round(round(entry_price / tick) * tick, 8)
+    sl_price = round_to_tick(sl_price)
+    tp_price = round_to_tick(tp_price)
+    entry_price = round_to_tick(entry_price)
 
     print(f"🎯 SMART ENTRY TARGET: {entry_price}")
 
@@ -783,37 +790,20 @@ def place_trade(symbol, direction, size, price, atr):
 
         order_id = order["orderId"]
 
-        # =====================
-        # WAIT FOR FILL (REAL CHECK)
-        # =====================
         filled = wait_for_fill(order_id, symbol, timeout=1800)
 
-        # =====================
-        # IF NOT FILLED → CANCEL
-        # =====================
         if not filled:
             print("❌ NOT FILLED - CANCELLING ORDER")
-
-            try:
-                client.futures_cancel_order(
-                    symbol=symbol,
-                    orderId=order_id
-                )
-            except:
-                pass
-
+            client.futures_cancel_order(symbol=symbol, orderId=order_id)
             return
 
-        # =====================
-        # IF FILLED → CONFIRM POSITION
-        # =====================
         time.sleep(1)
 
         positions = client.futures_position_information(symbol=symbol)
         position_amt = float(positions[0]["positionAmt"])
 
         if position_amt == 0:
-            print("⚠ NO POSITION FOUND AFTER FILL - SKIP SL/TP")
+            print("⚠ NO POSITION FOUND AFTER FILL")
             return
 
         entry_fill_price = float(positions[0]["entryPrice"])
@@ -828,19 +818,22 @@ def place_trade(symbol, direction, size, price, atr):
             sl_price = entry_fill_price + (atr * sl_mult)
             tp_price = entry_fill_price - (atr * tp_mult)
 
+        sl_price = round_to_tick(sl_price)
+        tp_price = round_to_tick(tp_price)
+
         # =====================
         # PLACE SL
         # =====================
         try:
-            sl_order = client.futures_create_order(
+            client.futures_create_order(
                 symbol=symbol,
                 side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
                 type="STOP_MARKET",
-                stopPrice=round(sl_price, 8),
+                stopPrice=sl_price,
                 closePosition=True,
                 workingType="MARK_PRICE"
             )
-            print("🟢 SL placed:", sl_order)
+            print("🟢 SL placed:", sl_price)
 
         except Exception as e:
             print("❌ SL ERROR:", e)
@@ -849,24 +842,36 @@ def place_trade(symbol, direction, size, price, atr):
         # PLACE TP
         # =====================
         try:
-            tp_order = client.futures_create_order(
+            client.futures_create_order(
                 symbol=symbol,
                 side=SIDE_SELL if direction == "BUY" else SIDE_BUY,
                 type="TAKE_PROFIT_MARKET",
-                stopPrice=round(tp_price, 8),
+                stopPrice=tp_price,
                 closePosition=True,
                 workingType="MARK_PRICE"
             )
-            print("🟢 TP placed:", tp_order)
+            print("🟢 TP placed:", tp_price)
 
         except Exception as e:
             print("❌ TP ERROR:", e)
 
-        print("🟢 SL + TP PLACED")
+        print("🟢 SL + TP PLACED SUCCESSFULLY")
 
     except Exception as e:
         print("❌ LIMIT ORDER ERROR:", e)
         return
+def get_tick_size(symbol):
+    info = client.futures_exchange_info()
+
+    for s in info["symbols"]:
+        if s["symbol"] == symbol:
+            for f in s["filters"]:
+                if f["filterType"] == "PRICE_FILTER":
+                    return float(f["tickSize"])
+
+    return 0.01
+def round_to_tick(price, tick):
+    return round(round(price / tick) * tick, 8)
 # =====================
 # POSITION CHECKER
 # =====================
