@@ -771,8 +771,7 @@ def place_trade(symbol, direction, size, price, atr):
                 type="STOP_MARKET",
                 stopPrice=round(sl_price, price_precision),
                 closePosition=True,
-                workingType="MARK_PRICE",
-                reduceOnly=True
+                workingType="MARK_PRICE"
             )
 
             # TAKE PROFIT
@@ -782,8 +781,7 @@ def place_trade(symbol, direction, size, price, atr):
                 type="TAKE_PROFIT_MARKET",
                 stopPrice=round(tp_price, price_precision),
                 closePosition=True,
-                workingType="MARK_PRICE",
-                reduceOnly=True
+                workingType="MARK_PRICE"
             )
 
             print("🛑 SL + 🎯 TP PLACED IMMEDIATELY")
