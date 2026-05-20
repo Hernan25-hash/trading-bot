@@ -93,6 +93,10 @@ def klines_to_df(klines):
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # 🔥 REMOVE invalid values
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    # 🔥 REMOVE broken rows
     df = df.dropna()
 
     return df
@@ -499,7 +503,12 @@ def volume_bias(symbol, direction):
         price = df["close"].iloc[-1]
         ema = EMAIndicator(df["close"], window=20).ema_indicator().iloc[-1]
 
-        vol_ratio = df["volume"].iloc[-1] / df["volume"].mean()
+        vol_mean = df["volume"].mean()
+
+        if vol_mean <= 0 or np.isnan(vol_mean):
+            vol_ratio = 1
+        else:
+            vol_ratio = df["volume"].iloc[-1] / vol_mean
 
         if price > ema:
             buy += vol_ratio
@@ -582,7 +591,12 @@ def signal(df, symbol):
     # VOLUME FILTER
     # =====================
     vol = df["volume"].iloc[-1]
-    vol_ratio = vol / df["volume"].mean()
+    vol_mean = df["volume"].mean()
+
+    if vol_mean <= 0 or np.isnan(vol_mean):
+        vol_ratio = 1
+    else:
+        vol_ratio = vol / vol_mean
 
     if vol_ratio > 1.5:
         score += 2
