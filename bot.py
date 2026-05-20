@@ -143,8 +143,12 @@ daily_loss_limit = -20
 
 lock_file = os.path.join(os.getcwd(), "bot.lock")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
+INVERT_DIRECTION = True  # 🔥 toggle mo lang ito
+def apply_direction(direction):
+    if not INVERT_DIRECTION:
+        return direction
 
-
+    return "SELL" if direction == "BUY" else "BUY"
 def log_step(step, msg):
     logging.info(f"[{step}] {msg}")
 
@@ -246,7 +250,8 @@ TIMEFRAME = "5m"
 RISK_PER_TRADE = 0.01
 
 TRADE_ENABLED = True  # 🔴 SAFE MODE (set True kapag ready ka na)
-
+# 🔥 SWITCH BUY/SELL LOGIC
+INVERT_DIRECTION = True
 MIN_BALANCE = 10
 
 
@@ -528,7 +533,7 @@ def signal(df, symbol):
 
     score = 0
 
-    # 📊 TREND DIRECTION (UNCHANGED LOGIC)
+    # 📊 TREND DIRECTION
     if price > ema:
         direction = "BUY"
         score += 2
@@ -536,7 +541,21 @@ def signal(df, symbol):
         direction = "SELL"
         score += 2
 
-    # 🔥 FIX ONLY: volume_bias AFTER direction is set
+    # 🔥 SAVE ORIGINAL
+    original_direction = direction
+
+    # 🔥 APPLY SWITCH
+    direction = apply_direction(direction)
+
+    # 🔥 LOG SWITCH
+    print(f"🔄 Direction switched: {original_direction} -> {direction}")
+
+    log_step(
+        "SWITCH",
+        f"{symbol} direction switched: {original_direction} -> {direction}"
+    )
+
+        # 🔥 volume bias AFTER switch
     volume_pressure = volume_bias(symbol, direction)
 
     # =====================
