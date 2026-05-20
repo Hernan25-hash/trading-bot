@@ -1,3 +1,5 @@
+from xmlrpc import client
+
 from binance.client import Client
 from binance.enums import SIDE_BUY, SIDE_SELL
 from numpy.ma import filled
@@ -12,7 +14,7 @@ from ta.volatility import AverageTrueRange
 import time
 
 last_request = 0
-MIN_DELAY = 0.2  # 5 requests per second max
+MIN_DELAY = 0.5  # 5 requests per second max
 
 
 def rate_limit():
@@ -45,7 +47,22 @@ def get_klines(symbol, interval, limit=50):
         return klines_cache[key]
 
     # 🔥 DITO DAPAT DIRECT BINANCE CALL
-    data = client.futures_klines(symbol=symbol, interval=interval, limit=limit)
+    try:
+        data = client.futures_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit
+        )
+    except Exception as e:
+        print(f"⚠ Error fetching {symbol} {interval}: {e}")
+        time.sleep(2)
+
+        data = client.futures_klines(
+            symbol=symbol,
+            interval=interval,
+            limit=limit
+        )
+    
 
     klines_cache[key] = data
     cache_time[key] = now
@@ -88,10 +105,36 @@ load_dotenv()
 # CONFIG / SETTINGS
 # =====================
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "MATICUSDT",
+    "LTCUSDT",
+    "BCHUSDT",
+    "DOTUSDT",
+    "ATOMUSDT",
+    "TRXUSDT",
+    "XLMUSDT",
+    "NEARUSDT",
+    "FILUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "OPUSDT",
+    "SUIUSDT",
+    "INJUSDT",
+    "TIAUSDT",
+    "SEIUSDT"
+]
 TIMEFRAME = "5m"
 # 🔥 ADD THIS HERE
-weights = {"1m": 1, "5m": 1, "15m": 2, "1h": 3, "4h": 4, "1d": 5}
+weights = {"5m": 1, "15m": 2, "1h": 3}
 
 MAX_TRADES_PER_CYCLE = 1
 MIN_BALANCE = 10
@@ -419,7 +462,7 @@ def analyze(df):
 
 
 def volume_bias(symbol, direction):
-    tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
+    tfs = ["5m", "15m"]
 
     buy = 0
     sell = 0
@@ -906,7 +949,7 @@ def has_pending_order(symbol):
     except:
         return False
 def preload_data(symbol):
-    tfs = ["1m", "5m", "15m", "1h", "4h", "1d"]
+    tfs = ["5m", "15m", "1h"]
     for tf in tfs:
         get_klines(symbol, tf, 120)
 
@@ -976,9 +1019,9 @@ while True:
 
             # ✅ FIX: scoring MUST be inside loop
             if price > ema:
-                buy_score += weights[tf] * (1 / len(trend_tfs))
+                buy_score += weights.get(tf, 1) * (1 / len(trend_tfs))
             else:
-                sell_score += weights[tf] * (1 / len(trend_tfs))
+                sell_score += weights.get(tf, 1) * (1 / len(trend_tfs))
                 print(tf, "=>", "BUY" if price > ema else "SELL", price, ema)
 
         trend_direction = "BUY" if buy_score > sell_score else "SELL"
